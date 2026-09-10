@@ -1,0 +1,448 @@
+// 綠谷國際 GV STUDIO — 線上人資考勤系統
+// 資料庫：開發用 SQLite；正式環境建議切換為 PostgreSQL（provider = "postgresql"）
+// SQLite 不支援 enum / 陣列，故列舉值以 String 儲存，多值以 JSON 字串儲存。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ────────────────────────────────────────────────
+// 組織 / 基礎資料
+// ────────────────────────────────────────────────
+
+model Organization {
+  id          Int          @id @default(autoincrement())
+  name        String
+  taxId       String?
+  createdAt   DateTime     @default(now())
+  departments Department[]
+  employees   Employee[]
+}
+
+model Department {
+  id        Int          @id @default(autoincrement())
+  orgId     Int
+  org       Organization @relation(fields: [orgId], references: [id])
+  name      String
+  parentId  Int?
+  parent    Department?  @relation("DeptTree", fields: [parentId], references: [id])
+  children  Department[] @relation("DeptTree")
+  managerId Int?
+  employees Employee[]
+}
+
+model WorkSchedule {
+  id           Int        @id @default(autoincrement())
+  name         String // 例：台北正常班
+  workStart    String // "09:00"
+  workEnd      String // "18:00"
+  lunchMinutes Int        @default(60)
+  flexMinutes  Int        @default(0) // 彈性上下班容許區間；0 = 不啟用
+  workdays     String     @default("1,2,3,4,5") // 週一=1 ... 週日=0
+  employees    Employee[]
+}
+
+// 行事曆：政府行政機關辦公日曆表（115 / 116 年）
+model Holiday {
+  id        Int      @id @default(autoincrement())
+  date      DateTime @unique
+  name      String
+  type      String   @default("NATIONAL") // NATIONAL 國定假日 | FLEX 彈性放假 | MAKEUP 補行上班 | DISASTER 災防
+  appliesTo String   @default("ALL") // ALL 全體 | LABOR 僅勞工適用（如勞動節）
+  isWorkday Boolean  @default(false) // 補班日 = true
+  note      String?
+}
+
+// ────────────────────────────────────────────────
+// 員工主檔（人資大表）
+// ────────────────────────────────────────────────
+
+model Employee {
+  id             Int           @id @default(autoincrement())
+  orgId          Int
+  org            Organization  @relation(fields: [orgId], references: [id])
+  employeeNo     String        @unique
+  name           String
+  email          String        @unique
+  phone          String?
+  deptId         Int?
+  dept           Department?   @relation(fields: [deptId], references: [id])
+  positionTitle  String?
+  jobGrade       String?
+  managerId      Int? // 直屬主管 employee.id
+  role           String        @default("EMPLOYEE") // EMPLOYEE | MANAGER | HR | ADMIN
+  employmentType String        @default("FULL_TIME") // FULL_TIME | PART_TIME | CONTRACT
+  scheduleId     Int?
+  schedule       WorkSchedule? @relation(fields: [scheduleId], references: [id])
+  workLocation   String        @default("台北")
+  hireDate       DateTime
+  leaveDate      DateTime? // 離職日
+  status         String        @default("ACTIVE") // ACTIVE | ON_LEAVE_NOPAY 留停 | RESIGNED
+  monthlySalary  Int           @default(0) // 月薪（本薪），用於加班費 / 請假扣薪 / 折現試算
+  fullAttendanceBonus Int      @default(0) // 全勤獎金（元/月）
+
+  // 勞健保 / 勞退（人資大表）
+  laborInsuranceGrade  Int?
+  healthInsuranceGrade Int?
+  pensionSelfPercent   Float @default(0) // 勞退自願提繳 %
+  laborInsuranceSelf   Int   @default(0) // 勞保自付額（元/月）
+  healthInsuranceSelf  Int   @default(0) // 健保自付額（元/月）
+
+  lineUserId String? // LINE 綁定
+  idNumber   String? // 身分證字號（特種個資，實作時應加密）
+  birthday   DateTime?
+  bankAccount String?
+  emergencyContact String?
+  isIndigenous Boolean @default(false) // 原住民族歲時祭儀假適用
+  gender       String? // M | F | OTHER
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  punches          PunchRecord[]
+  punchCorrections PunchCorrection[]
+  attendance       AttendanceDaily[]
+  leaveRequests    LeaveRequest[]
+  leaveBalances    LeaveBalance[]
+  overtimeRequests OvertimeRequest[]
+  businessTrips    BusinessTrip[]
+  outings          Outing[]
+  wfhRequests      WfhRequest[]
+  changes          EmployeeChange[]
+  compTime         CompTimeEntry[]
+  approvals        Approval[]        @relation("ApproverApprovals")
+  anomalies        Anomaly[]
+  notifications    Notification[]
+  delegationsGiven Delegation[]      @relation("Delegator")
+  delegationsHeld  Delegation[]      @relation("Delegate")
+}
+
+model EmployeeChange {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  type       String // HIRE | RESIGN | TRANSFER 調部門 | PROMOTE 升遷 | DEMOTE | GRADE 級距調整 | LEAVE_NOPAY 留停 | REINSTATE 復職
+  effectiveDate DateTime
+  fromValue  String?
+  toValue    String?
+  note       String?
+  createdAt  DateTime @default(now())
+}
+
+// ────────────────────────────────────────────────
+// 打卡 / 出勤
+// ────────────────────────────────────────────────
+
+model PunchRecord {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  type       String // IN 上班 | OUT 下班 | OUTING_OUT 外出 | OUTING_IN 外出返回 | OT_IN 加班起 | OT_OUT 加班迄
+  ts         DateTime
+  lat        Float?
+  lng        Float?
+  ip         String?
+  source     String   @default("WEB") // WEB | LIFF | KIOSK
+  note       String?
+  createdAt  DateTime @default(now())
+
+  @@index([employeeId, ts])
+}
+
+model PunchCorrection {
+  id           Int      @id @default(autoincrement())
+  employeeId   Int
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  targetDate   DateTime
+  punchType    String
+  requestedTs  DateTime
+  reason       String
+  status       String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  createdAt    DateTime @default(now())
+}
+
+model AttendanceDaily {
+  id             Int      @id @default(autoincrement())
+  employeeId     Int
+  employee       Employee @relation(fields: [employeeId], references: [id])
+  date           DateTime
+  firstIn        DateTime?
+  lastOut        DateTime?
+  workMinutes    Int      @default(0)
+  lateMinutes    Int      @default(0)
+  earlyLeaveMin  Int      @default(0)
+  otMinutes      Int      @default(0)
+  status         String   @default("NORMAL") // NORMAL | LATE | EARLY | ABSENT | LEAVE | TRIP | WFH | HOLIDAY | MAKEUP
+  detail         String? // JSON：計算細節
+  settledAt      DateTime @default(now())
+
+  @@unique([employeeId, date])
+}
+
+// ────────────────────────────────────────────────
+// 假別 / 請假
+// ────────────────────────────────────────────────
+
+model LeaveType {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique // ANNUAL / MARRIAGE / SICK / ...
+  name          String
+  legalBasis    String
+  unit          String   @default("HOUR") // HOUR | HALF_DAY | DAY
+  paidRate      Float    @default(1.0) // 1=全薪 0.5=半薪 0=無薪
+  annualQuota   Float? // 年度額度（日）；null = 依規則計算或不限
+  statutoryCap  String? // 法定上限說明
+  attachmentRule String  @default("OPTIONAL") // REQUIRED 必附 | CONDITIONAL 條件式 | FORBIDDEN 不得要求 | OPTIONAL 得要求
+  attachmentNote String?
+  countsAs      String? // 併入哪個假別額度，例：FAMILY_CARE -> PERSONAL
+  deferrable    Boolean  @default(false)
+  needsHrReview Boolean  @default(false)
+  active        Boolean  @default(true)
+  sortOrder     Int      @default(0)
+
+  requests LeaveRequest[]
+  balances LeaveBalance[]
+}
+
+model LeaveBalance {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  leaveTypeId Int
+  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id])
+  periodStart DateTime // 週年制：到職週年起日
+  periodEnd   DateTime
+  grantedDays Float    @default(0)
+  usedDays    Float    @default(0)
+  pendingDays Float    @default(0)
+  deferredDays Float   @default(0)
+  note        String?
+
+  @@unique([employeeId, leaveTypeId, periodStart])
+}
+
+model LeaveRequest {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  leaveTypeId Int
+  leaveType   LeaveType @relation(fields: [leaveTypeId], references: [id])
+  startAt     DateTime
+  endAt       DateTime
+  hours       Float
+  days        Float
+  reason      String?
+  agentId     Int? // 代理人 employee.id
+  attachments String   @default("[]") // JSON 陣列：檔名 / URL
+  status      String   @default("PENDING") // PENDING | APPROVED | REJECTED | CANCELLED
+  currentStep Int      @default(0)
+  createdAt   DateTime @default(now())
+  decidedAt   DateTime?
+
+  approvals Approval[]
+}
+
+// ────────────────────────────────────────────────
+// 加班 / 補休
+// ────────────────────────────────────────────────
+
+model OvertimeRequest {
+  id           Int      @id @default(autoincrement())
+  employeeId   Int
+  employee     Employee @relation(fields: [employeeId], references: [id])
+  date         DateTime
+  plannedStart DateTime
+  plannedEnd   DateTime
+  actualMinutes Int?    // 由加班段打卡回填
+  dayType      String   @default("WORKDAY") // WORKDAY 平日 | REST_DAY 休息日 | HOLIDAY 國定假日 | OFF_DAY 例假
+  compensation String   @default("PAY") // PAY 加班費 | COMP_TIME 補休
+  reason       String
+  project      String?
+  status       String   @default("PENDING")
+  currentStep  Int      @default(0)
+  estimatedPay Int?
+  createdAt    DateTime @default(now())
+  decidedAt    DateTime?
+
+  approvals Approval[]
+}
+
+model CompTimeEntry {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  earnedMinutes Int
+  usedMinutes   Int    @default(0)
+  earnedOn    DateTime
+  expiresOn   DateTime
+  convertedToPay Boolean @default(false)
+  sourceOtId  Int?
+}
+
+// ────────────────────────────────────────────────
+// 出差 / 外出 / 遠距
+// ────────────────────────────────────────────────
+
+model BusinessTrip {
+  id          Int      @id @default(autoincrement())
+  employeeId  Int
+  employee    Employee @relation(fields: [employeeId], references: [id])
+  scope       String   @default("DOMESTIC") // DOMESTIC | OVERSEAS
+  startAt     DateTime
+  endAt       DateTime
+  destination String
+  purpose     String
+  transport   String?
+  estCost     Int?
+  needAdvance Boolean  @default(false)
+  agentId     Int?
+  status      String   @default("PENDING")
+  currentStep Int      @default(0)
+  createdAt   DateTime @default(now())
+  decidedAt   DateTime?
+
+  approvals Approval[]
+}
+
+model Outing {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  startAt    DateTime
+  endAt      DateTime
+  location   String
+  purpose    String
+  status     String   @default("PENDING")
+  createdAt  DateTime @default(now())
+
+  approvals Approval[]
+}
+
+model WfhRequest {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  date       DateTime
+  location   String?
+  contact    String?
+  plan       String?
+  outputNote String?
+  status     String   @default("PENDING")
+  createdAt  DateTime @default(now())
+
+  approvals Approval[]
+}
+
+model ShiftSwap {
+  id          Int      @id @default(autoincrement())
+  requesterId Int
+  counterpartId Int
+  date        DateTime
+  swapDate    DateTime
+  reason      String?
+  status      String   @default("PENDING")
+  createdAt   DateTime @default(now())
+}
+
+model Delegation {
+  id          Int      @id @default(autoincrement())
+  delegatorId Int
+  delegator   Employee @relation("Delegator", fields: [delegatorId], references: [id])
+  delegateId  Int
+  delegate    Employee @relation("Delegate", fields: [delegateId], references: [id])
+  startAt     DateTime
+  endAt       DateTime
+  scope       String   @default("ALL") // ALL | APPROVAL 僅簽核
+  createdAt   DateTime @default(now())
+}
+
+// ────────────────────────────────────────────────
+// 簽核 / 異常 / 法遵 / 通知 / 稽核
+// ────────────────────────────────────────────────
+
+model Approval {
+  id         Int      @id @default(autoincrement())
+  formType   String // LEAVE | OVERTIME | TRIP | OUTING | WFH | PUNCH_FIX
+  step       Int
+  approverId Int
+  approver   Employee @relation("ApproverApprovals", fields: [approverId], references: [id])
+  status     String   @default("PENDING") // PENDING | APPROVED | REJECTED
+  comment    String?
+  decidedAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  leaveRequestId    Int?
+  leaveRequest      LeaveRequest? @relation(fields: [leaveRequestId], references: [id])
+  overtimeRequestId Int?
+  overtimeRequest   OvertimeRequest? @relation(fields: [overtimeRequestId], references: [id])
+  businessTripId    Int?
+  businessTrip      BusinessTrip? @relation(fields: [businessTripId], references: [id])
+  outingId          Int?
+  outing            Outing? @relation(fields: [outingId], references: [id])
+  wfhRequestId      Int?
+  wfhRequest        WfhRequest? @relation(fields: [wfhRequestId], references: [id])
+}
+
+model Anomaly {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  date       DateTime
+  type       String // MISSING_PUNCH | LATE | EARLY_LEAVE | ABSENT | OT_NO_REQUEST | OT_OVER_LIMIT | REST_VIOLATION
+  detail     String?
+  severity   String   @default("WARN") // INFO | WARN | HIGH
+  resolved   Boolean  @default(false)
+  resolvedById Int?
+  resolvedAt DateTime?
+  createdAt  DateTime @default(now())
+}
+
+model ComplianceAlert {
+  id         Int      @id @default(autoincrement())
+  employeeId Int?
+  rule       String // OT_46 | OT_54 | OT_138 | WEEKLY_REST | SHIFT_GAP_11 | DAILY_12H
+  periodKey  String // 例："2026-03" 或 "2026-Q1"
+  level      String   @default("WARN") // WARN 80% | ALERT 100% | BREACH 已違反
+  message    String
+  createdAt  DateTime @default(now())
+}
+
+model Notification {
+  id         Int      @id @default(autoincrement())
+  employeeId Int
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  channel    String   @default("LINE") // LINE | EMAIL
+  template   String
+  payload    String // JSON
+  status     String   @default("QUEUED") // QUEUED | SENT | FAILED
+  error      String?
+  createdAt  DateTime @default(now())
+  sentAt     DateTime?
+}
+
+model Announcement {
+  id        Int      @id @default(autoincrement())
+  title     String
+  body      String
+  audience  String   @default("ALL") // ALL | DEPT:<id> | ROLE:<role>
+  pinned    Boolean  @default(false)
+  createdBy Int
+  createdAt DateTime @default(now())
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  actorId   Int?
+  action    String
+  entity    String
+  entityId  String?
+  before    String?
+  after     String?
+  ip        String?
+  createdAt DateTime @default(now())
+}
