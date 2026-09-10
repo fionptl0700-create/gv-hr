@@ -245,6 +245,14 @@ function anniversaryPeriod(hire,asOf){
   return { start:ps, end:pe, granted:m<6?0:annualLeaveDays(hire,ps),
            daysLeft:Math.ceil((pe-asOf)/86400000) };
 }
+/* 下一次特休給假日與日數（§38 週年制：滿 6 個月給 3 日，其後每個到職週年重新給） */
+function nextAnnualGrant(hire,asOf){
+  const m=monthsOfService(hire,asOf);
+  if(m<6){ const d=new Date(hire); d.setMonth(d.getMonth()+6); return { date:d, days:3, first:true }; }
+  const y=Math.floor(m/12)+1;
+  const d=new Date(hire); d.setFullYear(d.getFullYear()+y);
+  return { date:d, days:annualLeaveDays(hire,d), first:false };
+}
 
 /* ---------- 加班費（§24）／上限（§32） ---------- */
 const hourly = s => s/240;
@@ -261,26 +269,41 @@ function otLimit(mins,agreement){
   return { cap, ratio, level };
 }
 
-/* ---------- 月薪試算（綠谷：無全勤獎金；含伙食津貼 3,000 免稅） ---------- */
+/* ---------- 月薪試算 ----------
+   綠谷：無全勤獎金；伙食 3,000 免稅。
+   當月部分在職（到職／離職落在月中）：本薪、固定津貼、勞健保自付
+   按「在職曆日數 ÷ 當月曆日數」比例計算（勞動部函釋，月薪 ÷ 當月天數 × 在職天數）。
+   加班費、出差津貼、遲到早退／請假扣款皆按實際發生，不比例。 */
 function computePayroll(i){
   const hr=i.monthlySalary/240, dw=i.monthlySalary/30;
+  const dim = i.daysInMonth || 30;
+  const ed  = (i.employedDays==null) ? dim : Math.max(0, i.employedDays);
+  const partial = ed < dim;
+  const f = partial ? ed/dim : 1;
+  const pTag = partial ? `（在職 ${ed}/${dim} 日）` : '';
+  const pNote = partial ? `月薪 ${Math.round(i.monthlySalary)} ÷ ${dim} × ${ed} 日` : undefined;
+
   const earnings=[], deductions=[], flags=[];
-  earnings.push({ label:'本薪（月薪）', amount:Math.round(i.monthlySalary) });
-  if(i.meal>0)       earnings.push({ label:'伙食津貼', amount:Math.round(i.meal), note:'免稅上限 3,000／月' });
-  if(i.mgrAllow>0)   earnings.push({ label:'主管津貼', amount:Math.round(i.mgrAllow) });
-  if(i.otherAllow>0) earnings.push({ label:'其他津貼', amount:Math.round(i.otherAllow) });
+  earnings.push({ label:`本薪${partial?pTag:'（月薪）'}`, amount:Math.round(i.monthlySalary*f), note:pNote });
+  if(i.meal>0)       earnings.push({ label:`伙食津貼${partial?'（比例）':''}`, amount:Math.round(i.meal*f), note: partial?undefined:'免稅上限 3,000／月' });
+  if(i.mgrAllow>0)   earnings.push({ label:`主管津貼${partial?'（比例）':''}`, amount:Math.round(i.mgrAllow*f) });
+  if(i.otherAllow>0) earnings.push({ label:`其他津貼${partial?'（比例）':''}`, amount:Math.round(i.otherAllow*f) });
   if(i.overtimePay>0) earnings.push({ label:'加班費（本月核定）', amount:Math.round(i.overtimePay) });
   if(i.perDiem>0) earnings.push({ label:`出差津貼（${i.perDiemDays} 日）`, amount:Math.round(i.perDiem), note:`每日 ${i.pdRate||''}` });
+
   if(i.unpaidHours>0) deductions.push({ label:`事假／無薪假扣薪（${i.unpaidHours} 小時）`, amount:Math.round(hr*i.unpaidHours), note:`時薪 ${Math.round(hr)} × ${i.unpaidHours}h` });
   if(i.halfHours>0)   deductions.push({ label:`病假／生理假扣薪（${i.halfHours} 小時，半薪）`, amount:Math.round(hr*i.halfHours*0.5), note:`時薪 ${Math.round(hr)} × ${i.halfHours}h × 50%` });
   if(i.absentDays>0)  deductions.push({ label:`曠職扣薪（${i.absentDays} 日）`, amount:Math.round(dw*i.absentDays), note:`日薪 ${Math.round(dw)} × ${i.absentDays}` });
   if(i.lateMin>0)     deductions.push({ label:`遲到扣薪（${i.lateMin} 分鐘）`, amount:Math.round(hr*i.lateMin/60), note:'按未提供勞務時間比例，未另立罰款' });
   if(i.earlyMin>0)    deductions.push({ label:`早退扣薪（${i.earlyMin} 分鐘）`, amount:Math.round(hr*i.earlyMin/60), note:'按未提供勞務時間比例' });
-  if(i.laborSelf>0)   deductions.push({ label:'勞保費（自付）', amount:Math.round(i.laborSelf) });
-  if(i.healthSelf>0)  deductions.push({ label:'健保費（自付）', amount:Math.round(i.healthSelf) });
+  if(i.laborSelf>0)   deductions.push({ label:`勞保費（自付）${partial?'（投保比例）':''}`, amount:Math.round(i.laborSelf*f) });
+  if(i.healthSelf>0)  deductions.push({ label:`健保費（自付）${partial?'（投保比例）':''}`, amount:Math.round(i.healthSelf*f) });
+
+  if(partial) flags.push(`當月部分在職：${ed}/${dim} 日 —— 本薪、固定津貼、勞健保自付均按比例計算`);
+
   const gross=earnings.reduce((s,e)=>s+e.amount,0);
   const totDed=deductions.reduce((s,d)=>s+d.amount,0);
-  return { hourly:Math.round(hr), daily:Math.round(dw), earnings, deductions, gross, totDed, net:gross-totDed, flags };
+  return { hourly:Math.round(hr), daily:Math.round(dw), employedDays:ed, daysInMonth:dim, partial, earnings, deductions, gross, totDed, net:gross-totDed, flags };
 }
 
 /* =========================  種子資料  ========================= */
@@ -618,6 +641,8 @@ V.attendance = () => {
 V.leave = () => {
   const e = me();
   const per = anniversaryPeriod(new Date(e.hire), TODAY);
+  const ng = nextAnnualGrant(new Date(e.hire), TODAY);
+  const mos = monthsOfService(new Date(e.hire), TODAY);
   const used = DB.leaves.filter(l=>l.emp===e.id&&l.type==='ANNUAL'&&l.status==='APPROVED').reduce((s,l)=>s+l.days,0);
   const pend = DB.leaves.filter(l=>l.emp===e.id&&l.type==='ANNUAL'&&l.status==='PENDING').reduce((s,l)=>s+l.days,0);
   const mine = DB.leaves.filter(l=>l.emp===e.id).slice().reverse();
@@ -625,14 +650,15 @@ V.leave = () => {
   const tw={APPROVED:'✅ 已核准',PENDING:'⏳ 簽核中',REJECTED:'✖ 已駁回',CANCELLED:'已取消'};
   return `<div class="stack">
     <div class="row" style="justify-content:space-between">
-      <div class="muted">週年制特休 · ${fmtD(e.hire)} 到職，年資 ${yearsOfService(new Date(e.hire),TODAY)} 年</div>
+      <div class="muted">週年制特休 · ${fmtD(e.hire)} 到職，年資 ${yearsOfService(new Date(e.hire),TODAY)} 年 ${mos} 個月</div>
       <a class="btn primary" href="#/leave/new">📝 新增請假</a>
     </div>
+    ${per.granted===0 ? `<div class="callout">🏝️ 依勞基法 §38，到職未滿 6 個月尚無特休。<b>${fmtD(ng.date)}</b>（滿 6 個月）起可獲 <b>${ng.days} 日</b>特休。<span class="subnote">（若公司要「按到職日比例先給」，屬優於法令之勞資約定，可另設定）</span></div>` : ''}
     <div class="tiles">
-      <div class="tile"><div class="k">🏝️ 本年度給假</div><div class="v">${per.granted}</div></div>
+      <div class="tile"><div class="k">🏝️ 本年度給假</div><div class="v">${per.granted}</div><div class="hint">依年資級距（§38）</div></div>
       <div class="tile"><div class="k">✔️ 已使用</div><div class="v">${used}</div></div>
       <div class="tile"><div class="k">⏳ 簽核中</div><div class="v">${pend}</div></div>
-      <div class="tile"><div class="k">💚 可用餘額</div><div class="v">${per.granted-used-pend}</div><div class="hint">${fmtD(per.start)}–${fmtD(per.end)}</div></div>
+      <div class="tile"><div class="k">💚 可用餘額</div><div class="v">${per.granted-used-pend}</div><div class="hint">${per.granted>0?`${fmtD(per.start)}–${fmtD(per.end)}`:`下次給假 ${fmtD(ng.date)} · ${ng.days} 日`}</div></div>
     </div>
     <div class="panel"><h2>📄 我的請假申請</h2><div class="tablewrap"><table>
       <thead><tr><th>假別</th><th>期間</th><th>日數</th><th>工資</th><th>附件</th><th>簽核進度</th><th>狀態</th><th></th></tr></thead>
@@ -850,7 +876,7 @@ V.hr = () => {
     <td>${ROLE_LABEL[e.role]}</td>
     <td class="mono">${fmtD(e.hire).slice(2)}</td>
     <td class="num">${yearsOfService(new Date(e.hire),TODAY)}</td>
-    <td class="num">${annualLeaveDays(new Date(e.hire),TODAY)}</td>
+    <td class="num">${annualLeaveDays(new Date(e.hire),TODAY)}${annualLeaveDays(new Date(e.hire),TODAY)===0?`<div class="subnote" style="text-align:right">${fmtD(nextAnnualGrant(new Date(e.hire),TODAY).date).slice(2)} 起 3 日</div>`:''}</td>
     <td class="num">${money(e.salary)}</td>
     <td class="num">${money(e.meal)}</td>
     <td class="num">${e.mgrAllow?money(e.mgrAllow):'—'}</td>
@@ -897,6 +923,7 @@ V.staff = () => {
           <div class="field"><label>職稱</label><input name="title" value="${e?esc(e.title):''}"></div>
           <div class="field"><label>角色 / 權限</label><select name="role">${Object.entries(ROLE_LABEL).map(([k,v])=>`<option value="${k}" ${e&&e.role===k?'selected':''}>${v}</option>`).join('')}</select></div>
           <div class="field"><label>到職日</label><input type="date" name="hire" value="${e?e.hire:ymd(TODAY)}"></div>
+          <div class="field"><label>離職日（在職留空）</label><input type="date" name="leaveDate" value="${e&&e.leaveDate?e.leaveDate:''}"></div>
           <div class="field"><label>月薪（本薪，NT$）</label><input type="number" name="salary" value="${e?e.salary:40000}" min="0"></div>
           <div class="field"><label>伙食津貼（NT$/月）</label><input type="number" name="meal" value="${e?e.meal:3000}" min="0"></div>
           <div class="field"><label>主管津貼（NT$/月）</label><input type="number" name="mgrAllow" value="${e?e.mgrAllow:0}" min="0"></div>
@@ -947,23 +974,40 @@ V.payroll = () => {
   const mTrips=DB.trips.filter(t=>t.emp===eid&&t.status==='APPROVED'&&t.start.startsWith(ym));
   const perDiem=mTrips.reduce((s,t)=>s+(t.perDiem||0),0);
   const perDiemDays=mTrips.reduce((s,t)=>s+(t.days||0),0);
+
+  // 當月在職曆日數（到職／離職落在月中 → 比例計薪）
+  const dim = new Date(yr, mo, 0).getDate();                 // 當月天數
+  const mStart = new Date(yr, mo-1, 1), mEnd = new Date(yr, mo-1, dim);
+  const hireD = new Date(e.hire + 'T00:00:00');
+  const leaveD = e.leaveDate ? new Date(e.leaveDate + 'T00:00:00') : null;
+  let employedDays = dim;
+  if (hireD > mEnd || (leaveD && leaveD < mStart)) {
+    employedDays = 0;                                        // 該月尚未到職 / 已離職
+  } else {
+    const s = hireD > mStart ? hireD : mStart;
+    const en = (leaveD && leaveD < mEnd) ? leaveD : mEnd;
+    employedDays = Math.round((en - s) / 86400000) + 1;
+  }
+
   const r=computePayroll({ monthlySalary:e.salary, meal:e.meal, mgrAllow:e.mgrAllow, otherAllow:e.otherAllow,
+    daysInMonth:dim, employedDays,
     lateMin:att.late, earlyMin:att.early, absentDays:att.absent,
     unpaidHours:lh.unpaid, halfHours:lh.half, overtimePay:otPay, perDiem, perDiemDays, pdRate:perDiemRate(e.role),
     laborSelf:e.laborSelf, healthSelf:e.healthSelf });
   const opts=EMP.map(x=>`<option value="${x.id}" ${x.id===eid?'selected':''}>${x.no} ${x.name}</option>`).join('');
   return `<div class="stack">
-    <div class="muted">依當月出勤、請假、加班自動計算應發／應扣。綠谷不設全勤獎金；伙食津貼、主管津貼、其他津貼固定發給。遲到早退僅按未提供勞務時間比例扣發。</div>
+    <div class="muted">依當月出勤、請假、加班自動計算應發／應扣。綠谷不設全勤獎金；伙食／主管／其他津貼固定發給。到職或離職落在月中，本薪與固定津貼按「在職天數 ÷ 當月天數」比例計算。遲到早退僅按未提供勞務時間比例扣發。</div>
     <div class="panel"><form data-form="payroll" class="row" style="align-items:flex-end">
       <div class="field"><label>員工</label><select name="e">${opts}</select></div>
       <div class="field" style="width:110px"><label>年</label><input type="number" name="y" value="${yr}"></div>
       <div class="field" style="width:90px"><label>月</label><input type="number" name="m" min="1" max="12" value="${mo}"></div>
       <button class="btn primary" type="submit">🧮 試算</button>
     </form></div>
+    ${r.partial ? `<div class="callout">📅 <b>${e.name}</b> 到職日 ${fmtD(e.hire)}${e.leaveDate?`、離職日 ${fmtD(e.leaveDate)}`:''} —— ${yr} 年 ${mo} 月屬<b>部分在職 ${r.employedDays}/${r.daysInMonth} 日</b>，本薪、固定津貼、勞健保自付已按比例計算。</div>` : ''}
     <div class="tiles">
       <div class="tile"><div class="k">💵 月薪（本薪）</div><div class="v">${money(e.salary).replace('NT$ ','')}</div><div class="hint">時薪 ${money(r.hourly)} · 日薪 ${money(r.daily)}</div></div>
+      <div class="tile"><div class="k">📆 當月在職天數</div><div class="v">${r.employedDays} / ${r.daysInMonth}<span style="font-size:12px"> 日</span></div><div class="hint">${r.partial?`比例 ${(r.employedDays/r.daysInMonth*100).toFixed(1)}%`:'整月在職'}</div></div>
       <div class="tile"><div class="k">⏰ 當月遲到／早退</div><div class="v">${att.late} / ${att.early}<span style="font-size:12px"> 分</span></div><div class="hint">曠職 ${att.absent} 日</div></div>
-      <div class="tile"><div class="k">📝 請假(無/半/全薪 時)</div><div class="v" style="font-size:18px">${lh.unpaid} / ${lh.half} / ${lh.full}</div><div class="hint">全薪假不扣薪</div></div>
       <div class="tile"><div class="k">💰 實發金額</div><div class="v">${money(r.net)}</div><div class="hint">${yr} 年 ${mo} 月</div></div>
     </div>
     <div class="grid2">
@@ -1079,7 +1123,8 @@ function submitTrip(fd){
 function saveStaff(fd, id){
   const flow=[fd.f1,fd.f2,fd.f3].filter(Boolean).map(Number);
   const base={ no:fd.no, name:fd.name, username:fd.username.trim().toLowerCase(), dept:+fd.dept, title:fd.title,
-    role:fd.role, hire:fd.hire, salary:+fd.salary, meal:+fd.meal, mgrAllow:+fd.mgrAllow||0, otherAllow:+fd.otherAllow||0,
+    role:fd.role, hire:fd.hire, leaveDate:fd.leaveDate||null, salary:+fd.salary, meal:+fd.meal,
+    mgrAllow:+fd.mgrAllow||0, otherAllow:+fd.otherAllow||0,
     laborSelf:+fd.laborSelf, healthSelf:+fd.healthSelf, flow };
   if (id){ Object.assign(emp(id), base); flash=`💾 已更新 ${base.name} 的資料`; }
   else {
