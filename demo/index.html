@@ -17,6 +17,7 @@
     --focus:#3E8266;
     --shadow:0 1px 2px rgba(20,40,32,.06), 0 4px 16px -8px rgba(20,40,32,.10);
     --morandi-1:#E8DAD6; --morandi-2:#DCE3D6; --morandi-3:#D8E0E3; --morandi-4:#EAE2D6;
+    --wine:#7A2E3A;
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
@@ -33,6 +34,7 @@
       --focus:#6FA88F;
       --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px -10px rgba(0,0,0,.5);
       --morandi-1:#3A2E2C; --morandi-2:#2A3128; --morandi-3:#273239; --morandi-4:#39331F;
+      --wine:#D98FA0;
       color-scheme: dark;
     }
   }
@@ -49,6 +51,7 @@
     --focus:#6FA88F;
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px -10px rgba(0,0,0,.5);
     --morandi-1:#3A2E2C; --morandi-2:#2A3128; --morandi-3:#273239; --morandi-4:#39331F;
+    --wine:#D98FA0;
     color-scheme: dark;
   }
 
@@ -167,7 +170,8 @@
     background:var(--brand-soft); color:var(--brand); font-size:12.5px; }
   .flash { padding:9px 13px; border-radius:9px; background:var(--good-bg); color:var(--good);
     font-size:12.5px; font-weight:600; margin-bottom:16px; display:flex; align-items:center; gap:7px; }
-  .flash.err { background:var(--bad-bg); color:var(--bad); }
+  .flash.err { background:var(--bad-bg); color:var(--bad); border:1.5px solid var(--bad); font-size:13.5px; animation:formErrShake .4s; }
+  @keyframes formErrShake { 10%,90%{transform:translateX(-1px);} 20%,80%{transform:translateX(2px);} 30%,50%,70%{transform:translateX(-5px);} 40%,60%{transform:translateX(5px);} }
   .chain { font-size:11.5px; color:var(--ink-faint); }
   .kv { display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid var(--surface-2); }
   .kv:last-child { border-bottom:none; }
@@ -476,6 +480,23 @@ const DEPTS = { 1:'管理部', 2:'設計部', 3:'業務部' };
 const ROLE_LABEL = { EMPLOYEE:'一般同仁', MANAGER:'主管', ADMIN:'管理員' };
 const PW = 'gv1234';
 
+/* 到職報到繳交清單（12 項），新增員工時勾選已收齊項目；未收齊且逾到職 14 天，該員工首頁會出現小提醒 */
+const ONBOARD_DOCS = [
+  { code:'CARD',    name:'本公司所定人事資料卡' },
+  { code:'RECEIPT', name:'報到程序暨文件收訖清單' },
+  { code:'PDPA',    name:'個人資料使用授權同意書' },
+  { code:'NDA',     name:'員工保密切結書' },
+  { code:'CONTRACT',name:'勞動契約' },
+  { code:'IDCOPY',  name:'國民身分證正反面影本' },
+  { code:'PHOTO',   name:'近三個月內兩吋照片一張' },
+  { code:'BANKBOOK',name:'薪資轉帳戶存摺封面影本' },
+  { code:'EDU',     name:'最高學歷證明文件' },
+  { code:'RESIGN',  name:'前任職公司離職證明書' },
+  { code:'INSOUT',  name:'前任職公司勞健保轉出單' },
+  { code:'INSREC',  name:'勞工保險投保紀錄' },
+];
+const ONBOARD_GRACE_DAYS = 14;
+
 /* 出差津貼（元/日）：主管職 1,500、一般職員 1,000 */
 const PERDIEM = { ADMIN:1500, MANAGER:1500, EMPLOYEE:1000 };
 const perDiemRate = role => PERDIEM[role] || 1000;
@@ -525,6 +546,24 @@ function resolveSteps(e, hrReview){
 
 let SEQ = 100;
 const DB = { punches:[], leaves:[], overtime:[], trips:[], outings:[], wfh:[], att:[], payslips:[], audit:[] };
+/* 打卡只在開機時預先載入「本月＋上月」到記憶體（見 loadPunchesCloud）；瀏覽更早的月份要另外向雲端補抓，
+   loadedPunchMonths 記錄哪些月份已經在 DB.punches 裡，ensurePunchMonth 負責按需補抓並在抓到後重繪畫面。 */
+const loadedPunchMonths = new Set();     // 已抓完成的月份
+const pendingPunchMonths = new Set();    // 抓取中，避免重複發request
+async function ensurePunchMonth(ym){
+  if (loadedPunchMonths.has(ym) || pendingPunchMonths.has(ym)) return;
+  pendingPunchMonths.add(ym);
+  if (OFFLINE || !CDB){ loadedPunchMonths.add(ym); pendingPunchMonths.delete(ym); return; }
+  try {
+    const s = await CDB.doc('gv/punch_'+ym).get();
+    if (s.exists){
+      const have = new Set(DB.punches.filter(p=>p.id).map(p=>p.id));
+      (unfreeze(s.data().list)||[]).forEach(p=>{ if(!p.id || !have.has(p.id)) DB.punches.push(p); });
+    }
+  } catch(e){}
+  loadedPunchMonths.add(ym); pendingPunchMonths.delete(ym);
+  render();
+}
 /* 稽核軌跡：誰、何時、對誰、做了什麼。保留最近 800 筆。 */
 function pushAudit(action, target, detail){
   try {
@@ -660,8 +699,10 @@ async function hydrate(){
 }
 async function loadPunchesCloud(){
   DB.punches.length = 0;
+  loadedPunchMonths.clear();
   const months = [curMonth(), prevMonth()];
   for (const m of months){
+    loadedPunchMonths.add(m);
     try { const s = await CDB.doc('gv/punch_'+m).get(); if (s.exists) (unfreeze(s.data().list)||[]).forEach(p=>DB.punches.push(p)); } catch(e){}
     try { CDB.doc('gv/punch_'+m).onSnapshot(sn=>{ if(!sn.exists||sn.metadata.hasPendingWrites||!window.__gvBooted) return;
       const others = DB.punches.filter(p=>p.ts.slice(0,7)!==m); DB.punches.length=0;
@@ -778,6 +819,7 @@ async function resetDemoData(){
     const pm = {}; (seed.db.punches||[]).forEach(p=>{ const m=p.ts.slice(0,7); (pm[m]=pm[m]||[]).push(p); });
     for (const m of [curMonth(), prevMonth()]) { try { await CDB.doc('gv/punch_'+m).set({ list: pm[m]||[] }); } catch(e){} }
     DB.punches.length = 0; (seed.db.punches||[]).forEach(p=>DB.punches.push(p));
+    loadedPunchMonths.clear(); loadedPunchMonths.add(curMonth()); loadedPunchMonths.add(prevMonth());
     setSave('✔ 已重置 ' + new Date().toLocaleTimeString('zh-TW',{hour:'2-digit',minute:'2-digit'}));
     flash = '🧪 已重置為示範資料，請重新登入'; state.uid = null; store.set(null); location.hash = ''; render();
   } catch(e){ persistErr('reset', e); flash = '⚠️ 重置失敗：'+((e&&e.message)||e); render(); }
@@ -804,6 +846,7 @@ const NAV = [
   { r:'overtime',  label:'加班',       ic:'⏱️' },
   { r:'trip',      label:'出差／外出', ic:'🚗' },
   { r:'my-payslips', label:'我的薪酬', ic:'📄' },
+  { r:'my-requests', label:'我的申請總覽', ic:'🗒️' },
   { r:'approvals', label:'簽核中心',   ic:'✅', need:'approver' },
   { r:'reports',   label:'報表彙整',   ic:'📊', need:'manager' },
 ];
@@ -854,6 +897,11 @@ function dashboardTips(e){
     const days = Math.ceil((new Date(t.start+'T00:00') - TODAY)/86400000);
     if (days>=0 && days<=3) tips.push({ icon:'✈️', text:`你有出差將於 ${fmtD(t.start)} 出發（${esc(t.dest||'')}），記得提前準備喔。`, href:'#/trip' });
   });
+  const daysSinceHire = Math.floor((TODAY - new Date(e.hire+'T00:00'))/86400000);
+  if (daysSinceHire >= ONBOARD_GRACE_DAYS){
+    const missing = ONBOARD_DOCS.filter(d=>!(e.onboardDocs && e.onboardDocs[d.code]));
+    if (missing.length) tips.push({ icon:'📎', text:`你尚有到職文件未繳齊：${missing.map(d=>d.name).join('、')}，請盡快掃描發送給管理部喔。` });
+  }
   return tips;
 }
 
@@ -923,7 +971,7 @@ V.dashboard = () => {
   const tipsPanel = tips.length ? `<div class="panel" style="background:var(--brand-soft);border-color:var(--brand)">
       <h2 style="color:var(--brand)">💡 貼心小提醒</h2>
       <div class="stack" style="gap:8px">${tips.map(t=>`<div class="row" style="justify-content:space-between;align-items:center;gap:10px">
-        <div>${t.icon} ${t.text}</div>${t.href?`<a class="btn sm" href="${t.href}" style="white-space:nowrap">前往 →</a>`:''}
+        <div style="color:var(--wine)">${t.icon} ${t.text}</div>${t.href?`<a class="btn sm" href="${t.href}" style="white-space:nowrap">前往 →</a>`:''}
       </div>`).join('')}</div>
     </div>` : '';
 
@@ -934,10 +982,10 @@ V.dashboard = () => {
     <h2 style="font-size:17px">🏠 嗨，${e.name}
       <span class="muted" style="font-family:'Noto Sans TC';font-size:13px;font-weight:400">　${fmtD(TODAY)}（${dow}）· ${DEPTS[e.dept]} · 台北正常班 09:00–18:00</span></h2>
     <div class="tiles">
-      <div class="tile" style="background:var(--morandi-1);border-color:transparent"><div class="k">🕘 今日上班</div><div class="v plain">${inP?fmtT(inP.ts):'--:--'}</div><div class="hint">${inP?'已簽到':'尚未簽到'}</div></div>
-      <div class="tile" style="background:var(--morandi-2);border-color:transparent"><div class="k">🕕 今日下班</div><div class="v plain">${outP?fmtT(outP.ts):'--:--'}</div><div class="hint">${outP?'已簽退':'尚未簽退'}</div></div>
-      <div class="tile" style="background:var(--morandi-3);border-color:transparent"><div class="k">🏝️ 特休剩餘</div><div class="v plain">${per.granted-used-pend}</div><div class="hint">給假 ${per.granted} 日 · ${fmtD(per.end)} 到期</div></div>
-      <div class="tile" style="background:var(--morandi-4);border-color:transparent"><div class="k">${approver?'✅ 待我簽核':'📤 我送出待簽'}</div><div class="v plain">${approver?myApprovals:DB.leaves.filter(l=>l.emp===e.id&&l.status==='PENDING').length}</div><div class="hint">${approver?'前往簽核中心':'等待主管簽核'}</div></div>
+      <div class="tile" style="background:var(--morandi-1);border-color:transparent"><div class="k">🕘 今日上班</div><div class="v" style="color:var(--ink-soft)">${inP?fmtT(inP.ts):'--:--'}</div><div class="hint">${inP?'已簽到':'尚未簽到'}</div></div>
+      <div class="tile" style="background:var(--morandi-2);border-color:transparent"><div class="k">🕕 今日下班</div><div class="v" style="color:var(--ink-soft)">${outP?fmtT(outP.ts):'--:--'}</div><div class="hint">${outP?'已簽退':'尚未簽退'}</div></div>
+      <div class="tile" style="background:var(--morandi-3);border-color:transparent"><div class="k">🏝️ 特休剩餘</div><div class="v" style="color:var(--ink-soft)">${per.granted-used-pend}</div><div class="hint">給假 ${per.granted} 日 · ${fmtD(per.end)} 到期</div></div>
+      <div class="tile" style="background:var(--morandi-4);border-color:transparent"><div class="k">${approver?'✅ 待我簽核':'📤 我送出待簽'}</div><div class="v" style="color:var(--ink-soft)">${approver?myApprovals:DB.leaves.filter(l=>l.emp===e.id&&l.status==='PENDING').length}</div><div class="hint">${approver?'前往簽核中心':'等待主管簽核'}</div></div>
     </div>
     <div class="panel"><h2>⚡ 快速操作</h2><div class="row">
       <a class="btn primary" href="#/punch">🕘 上／下班打卡</a>
@@ -950,7 +998,7 @@ V.dashboard = () => {
       return `<div class="panel"><h2>📋 我的申請進度</h2><div class="tablewrap"><table>
         <thead><tr><th>類型</th><th>內容</th><th>目前進度</th></tr></thead>
         <tbody>${shown.map(r=>{ const p=reqProgress(r.x); return `<tr><td>${r.kind}</td><td>${r.desc}</td><td><span class="badge ${p.tone}">${p.text}</span></td></tr>`; }).join('')}</tbody>
-      </table></div>${mine.length>8?`<p class="note">僅顯示最新 8 筆，完整記錄請至各申請列表查看。</p>`:''}</div>`; })()}
+      </table></div><p class="note">僅顯示最新 8 筆 · <a class="btn link" href="#/my-requests">查看完整申請總覽 →</a></p></div>`; })()}
     <div class="panel"><h2>📅 我的本月考勤（${TODAY.getMonth()+1} 月）</h2>
       <div class="tiles" style="margin-bottom:14px">
         <div class="tile"><div class="k">🚪 外出時數</div><div class="v">${att.outingHours} <span style="font-size:13px">小時</span></div></div>
@@ -966,10 +1014,34 @@ V.dashboard = () => {
   </div>`;
 };
 
+V['my-requests'] = () => {
+  const e = me();
+  const mine = myRequestsAll(e.id);
+  const rows = mine.map(r=>{ const p=reqProgress(r.x); return `<tr><td>${r.kind}</td><td>${r.desc}</td><td><span class="badge ${p.tone}">${p.text}</span></td></tr>`; }).join('');
+  return `<div class="stack">
+    <div class="muted">你送出過的所有請假／加班／出差／外出／遠距申請，一次列表查看目前進度（不限月份）。</div>
+    <div class="panel"><div class="tablewrap"><table>
+      <thead><tr><th>類型</th><th>內容</th><th>目前進度</th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="3" class="muted" style="text-align:center;padding:22px">尚無申請紀錄</td></tr>'}</tbody>
+    </table></div></div>
+  </div>`;
+};
+
 V.punch = () => {
   const e = me();
   const today = DB.punches.filter(p=>p.emp===e.id&&p.ts.startsWith(ymd(TODAY))).sort((a,b)=>a.ts.localeCompare(b.ts));
-  const recent = DB.punches.filter(p=>p.emp===e.id).slice(-12).reverse();
+  const q = new URLSearchParams(state.route.split('?')[1]||'');
+  const yr=+q.get('y')||TODAY.getFullYear(), mo=+q.get('m')||(TODAY.getMonth()+1), ym=`${yr}-${pad(mo)}`;
+  ensurePunchMonth(ym);
+  const monthReady = loadedPunchMonths.has(ym);
+  const recent = DB.punches.filter(p=>p.emp===e.id && p.ts.startsWith(ym)).sort((a,b)=>b.ts.localeCompare(a.ts));
+  let py=yr,pmo=mo-1; if(pmo<1){pmo=12;py--;}
+  let ny=yr,nmo=mo+1; if(nmo>12){nmo=1;ny++;}
+  const isCurYm = ym===curMonth();
+  const punchMonthNav = `<div class="row" style="align-items:center;gap:8px">
+    <a class="btn sm" href="#/punch?y=${py}&m=${pmo}">← 上個月</a>
+    ${isCurYm?'':`<a class="btn sm" href="#/punch?y=${ny}&m=${nmo}">下個月 →</a><a class="btn sm link" href="#/punch">回本月</a>`}
+  </div>`;
   const T={IN:'上班簽到',OUT:'下班簽退',OUTING_OUT:'外出',OUTING_IN:'外出返回',OT_IN:'加班開始',OT_OUT:'加班結束'};
   const mkBtn = ([t,l,p]) => `<button class="btn ${p?'primary':''}" style="padding:16px;font-size:14px" data-act="punch" data-type="${t}">${l}</button>`;
   const main=[['IN','🟢 上班簽到',1],['OUT','🔴 下班簽退',1]];
@@ -991,9 +1063,9 @@ V.punch = () => {
         <thead><tr><th>時間</th><th>類型</th><th>地點</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
         ${today.length?today.map(p=>`<tr><td class="mono">${fmtT(p.ts)}</td><td>${T[p.type]}</td><td>${gpsLink(p)}</td>${isAdmin()?`<td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️ 刪除</button></td>`:''}</tr>`).join(''):`<tr><td colspan="${isAdmin()?4:3}" class="muted" style="text-align:center;padding:22px">今日尚無打卡</td></tr>`}
         </tbody></table></div></div>
-      <div class="panel"><h2>🗓️ 近期打卡</h2><div class="tablewrap"><table>
+      <div class="panel"><h2>🗓️ ${yr} 年 ${mo} 月打卡紀錄</h2>${punchMonthNav}<div class="tablewrap" style="margin-top:10px"><table>
         <thead><tr><th>日期時間</th><th>類型</th><th>地點</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
-        ${recent.map(p=>`<tr><td class="mono">${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}</td><td>${T[p.type]}</td><td>${gpsLink(p)}</td>${isAdmin()?`<td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️</button></td>`:''}</tr>`).join('')||`<tr><td colspan="${isAdmin()?4:3}" class="muted" style="text-align:center;padding:22px">—</td></tr>`}
+        ${!monthReady?`<tr><td colspan="${isAdmin()?4:3}" class="muted" style="text-align:center;padding:22px">⏳ 載入中…</td></tr>`:recent.map(p=>`<tr><td class="mono">${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}</td><td>${T[p.type]}</td><td>${gpsLink(p)}</td>${isAdmin()?`<td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️</button></td>`:''}</tr>`).join('')||`<tr><td colspan="${isAdmin()?4:3}" class="muted" style="text-align:center;padding:22px">本月尚無打卡</td></tr>`}
         </tbody></table></div></div>
     </div>
     <p class="note">${isAdmin()?'誤打卡可按「🗑️ 刪除」移除該筆；':''}打卡紀錄僅管理員可刪除／調整，本人如發現錯誤請告知管理員協助處理。</p>
@@ -1116,8 +1188,20 @@ V.attendance = () => {
   const q = new URLSearchParams(state.route.split('?')[1]||'');
   const targetId = isAdmin() && q.get('e') ? +q.get('e') : me().id;
   const e = emp(targetId);
-  const att = monthAttendance(e.id, curMonth());
+  const yr = +q.get('y')||TODAY.getFullYear(), mo = +q.get('m')||(TODAY.getMonth()+1);
+  const ym = `${yr}-${pad(mo)}`;
+  ensurePunchMonth(ym);
+  const monthReady = loadedPunchMonths.has(ym);
+  const att = monthAttendance(e.id, ym);
   const back = (isAdmin() && targetId!==me().id) ? `<a class="btn link" href="#/hr">← 返回人資大表</a>` : '';
+  const eQS = (isAdmin() && targetId!==me().id) ? `&e=${targetId}` : '';
+  let py=yr,pmo=mo-1; if(pmo<1){pmo=12;py--;}
+  let ny=yr,nmo=mo+1; if(nmo>12){nmo=1;ny++;}
+  const isCurYm = ym===curMonth();
+  const monthNav = `<div class="row" style="align-items:center;gap:8px">
+    <a class="btn sm" href="#/attendance?y=${py}&m=${pmo}${eQS}">← 上個月</a>
+    ${isCurYm?'':`<a class="btn sm" href="#/attendance?y=${ny}&m=${nmo}${eQS}">下個月 →</a><a class="btn sm link" href="#/attendance${eQS?'?'+eQS.slice(1):''}">回本月</a>`}
+  </div>`;
   const dow = d => '日一二三四五六'[new Date(d+'T00:00').getDay()];
   const dayRows = att.rows.map(a=>{
     const [lab,tone] = ST_ATT[a.status] || ST_ATT.NORMAL;
@@ -1135,20 +1219,21 @@ V.attendance = () => {
   }).join('');
   return `<div class="stack">
     ${back}
-    <h2 style="font-size:16px">📅 ${e.name} · ${TODAY.getFullYear()} 年 ${TODAY.getMonth()+1} 月考勤${targetId!==me().id?`（${e.no}）`:''}</h2>
+    <h2 style="font-size:16px">📅 ${e.name} · ${yr} 年 ${mo} 月考勤${targetId!==me().id?`（${e.no}）`:''}</h2>
+    ${monthNav}
     <div class="banner"><span>🕘</span><div>班別 <b>09:00–18:00</b>，中間 <b>12:00–13:00 休息不計工時</b>，整日出勤實際工時 <b>8 小時</b>。遲到／早退僅以 09:00、18:00 為界，休息時間不影響；外出時段另從工時扣除。</div></div>
     <div class="tiles">
-      <div class="tile"><div class="k">📆 應出勤日</div><div class="v">${att.workDays} <span style="font-size:13px">日</span></div></div>
-      <div class="tile"><div class="k">🕘 實際工時</div><div class="v">${att.workedHours} <span style="font-size:13px">小時</span></div></div>
-      <div class="tile"><div class="k">🚪 外出時數</div><div class="v">${att.outingHours} <span style="font-size:13px">小時</span></div></div>
-      <div class="tile"><div class="k">⏰ 遲到合計</div><div class="v">${att.late} <span style="font-size:13px">分</span></div></div>
-      <div class="tile"><div class="k">🏃 早退合計</div><div class="v">${att.early} <span style="font-size:13px">分</span></div></div>
-      <div class="tile"><div class="k">❗ 缺卡</div><div class="v">${att.missing} <span style="font-size:13px">次</span></div></div>
-      <div class="tile"><div class="k">⛔ 曠職</div><div class="v">${att.absent} <span style="font-size:13px">日</span></div></div>
+      <div class="tile"><div class="k">📆 應出勤日</div><div class="v">${monthReady?att.workDays:'…'} <span style="font-size:13px">日</span></div></div>
+      <div class="tile"><div class="k">🕘 實際工時</div><div class="v">${monthReady?att.workedHours:'…'} <span style="font-size:13px">小時</span></div></div>
+      <div class="tile"><div class="k">🚪 外出時數</div><div class="v">${monthReady?att.outingHours:'…'} <span style="font-size:13px">小時</span></div></div>
+      <div class="tile"><div class="k">⏰ 遲到合計</div><div class="v">${monthReady?att.late:'…'} <span style="font-size:13px">分</span></div></div>
+      <div class="tile"><div class="k">🏃 早退合計</div><div class="v">${monthReady?att.early:'…'} <span style="font-size:13px">分</span></div></div>
+      <div class="tile"><div class="k">❗ 缺卡</div><div class="v">${monthReady?att.missing:'…'} <span style="font-size:13px">次</span></div></div>
+      <div class="tile"><div class="k">⛔ 曠職</div><div class="v">${monthReady?att.absent:'…'} <span style="font-size:13px">日</span></div></div>
     </div>
     <div class="panel"><h2>🗂️ 每日出勤明細（依打卡自動計算）</h2><div class="tablewrap"><table>
       <thead><tr><th>日期</th><th>上班</th><th>下班</th><th>工時</th><th>遲到(分)</th><th>早退(分)</th><th>外出時段</th><th>狀態</th><th>異常提醒</th></tr></thead>
-      <tbody>${dayRows || '<tr><td colspan="9" class="muted" style="text-align:center;padding:22px">本月尚無紀錄</td></tr>'}</tbody>
+      <tbody>${!monthReady?'<tr><td colspan="9" class="muted" style="text-align:center;padding:22px">⏳ 載入中…</td></tr>':(dayRows || '<tr><td colspan="9" class="muted" style="text-align:center;padding:22px">本月尚無紀錄</td></tr>')}</tbody>
     </table></div>
     <p class="note">工時＝出勤落在 09:00–12:00 與 13:00–18:00 兩段之時間（12:00–13:00 休息已自動扣除，外出時段亦已扣除）。遲到＝上班卡晚於 09:00；早退＝下班卡早於 18:00；應出勤日未打卡且無准假＝曠職（扣一日工資）；有上班卡缺下班卡＝缺卡（僅提醒補登，不視同曠職扣薪）；外出後未打返回卡＝外出未歸。<span class="ablock warn">⏰ 遲到</span><span class="ablock warn">🏃 早退</span><span class="ablock orange">❗ 缺卡</span><span class="ablock bad">⛔ 曠職</span><span class="ablock orange">🚪 外出未歸</span></p>
     </div>
@@ -1343,10 +1428,21 @@ function attHintHtml(code){
 
 V.overtime = () => {
   const e = me();
-  const list = DB.overtime.filter(o=>String(o.emp)===String(e.id)).slice().reverse();
-  const mMins = list.filter(o=>['APPROVED','PENDING'].includes(o.status)&&o.date.startsWith(curMonth())).reduce((s,o)=>s+o.hours*60,0);
+  const allMine = DB.overtime.filter(o=>String(o.emp)===String(e.id)).slice().reverse();
+  const mMins = allMine.filter(o=>['APPROVED','PENDING'].includes(o.status)&&o.date.startsWith(curMonth())).reduce((s,o)=>s+o.hours*60,0);
   const lim = otLimit(mMins,false);
   const limTxt={OK:'✅ 正常',WARN:'⚠️ 接近上限(80%)',ALERT:'🛑 已達上限',BREACH:'🛑 已超過上限'}[lim.level];
+  const q = new URLSearchParams(state.route.split('?')[1]||'');
+  const showAll = q.get('all')==='1';
+  const yr=+q.get('y')||TODAY.getFullYear(), mo=+q.get('m')||(TODAY.getMonth()+1), ym=`${yr}-${pad(mo)}`;
+  let py=yr,pmo=mo-1; if(pmo<1){pmo=12;py--;}
+  let ny=yr,nmo=mo+1; if(nmo>12){nmo=1;ny++;}
+  const isCurYm = ym===curMonth();
+  const monthNav = `<div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
+    ${showAll?'':`<a class="btn sm" href="#/overtime?y=${py}&m=${pmo}">← 上個月</a>${isCurYm?'':`<a class="btn sm" href="#/overtime?y=${ny}&m=${nmo}">下個月 →</a><a class="btn sm link" href="#/overtime">回本月</a>`}`}
+    <a class="btn sm link" href="#/overtime${showAll?'':'?all=1'}">${showAll?'只看單月':'顯示全部月份'}</a>
+  </div>`;
+  const list = showAll ? allMine : allMine.filter(o=>o.date.startsWith(ym));
   const tone={APPROVED:'good',PENDING:'warn',REJECTED:'bad',CANCELLED:''};
   const tw={APPROVED:'✅ 已核准',PENDING:'⏳ 簽核中',REJECTED:'✖ 已駁回',CANCELLED:'已取消'};
   const pool = compTimePool(e.id);
@@ -1360,7 +1456,7 @@ V.overtime = () => {
       <div class="tile"><div class="k">⚖️ §32 上限檢核</div><div class="v plain" style="font-size:16px;color:var(--${lim.level==='OK'?'good':lim.level==='WARN'?'warn':'bad'})">${limTxt}</div></div>
       <div class="tile"><div class="k">🔁 補休可用</div><div class="v">${pool.avail}<span style="font-size:13px"> 小時</span></div><div class="hint">${pool.expiring?`⚠️ ${pool.expiring}h 將到期 · `:''}${pool.expired?`${pool.expired}h 已逾期 · `:''}<a class="btn link" href="#/leave/new">申請補休 →</a></div></div>
     </div>
-    <div class="panel"><h2>📄 加班申請紀錄</h2><div class="tablewrap"><table>
+    <div class="panel"><h2>📄 加班申請紀錄${showAll?'（全部）':`（${yr} 年 ${mo} 月）`}</h2>${monthNav}<div class="tablewrap" style="margin-top:10px"><table>
       <thead><tr><th>日期</th><th>時間</th><th>時數</th><th>日別</th><th>補償</th><th>試算加班費（分段加成）</th><th>狀態</th><th></th></tr></thead>
       <tbody>${list.length?list.map(o=>{
         const bd = o.comp==='PAY' ? overtimeBreakdown(o.wageBase||wageBaseMonthly(e), o.hours, o.dayType) : null;
@@ -1403,15 +1499,27 @@ V['overtime/new'] = () => {
 
 V.trip = () => {
   const e = me();
-  const trips=DB.trips.filter(t=>String(t.emp)===String(e.id)).slice().reverse();
-  const outs=DB.outings.filter(o=>String(o.emp)===String(e.id)).slice().reverse();
-  const wfh=DB.wfh.filter(w=>String(w.emp)===String(e.id)).slice().reverse();
+  const q = new URLSearchParams(state.route.split('?')[1]||'');
+  const showAll = q.get('all')==='1';
+  const yr=+q.get('y')||TODAY.getFullYear(), mo=+q.get('m')||(TODAY.getMonth()+1), ym=`${yr}-${pad(mo)}`;
+  let py=yr,pmo=mo-1; if(pmo<1){pmo=12;py--;}
+  let ny=yr,nmo=mo+1; if(nmo>12){nmo=1;ny++;}
+  const isCurYm = ym===curMonth();
+  const monthNav = `<div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
+    ${showAll?'':`<a class="btn sm" href="#/trip?y=${py}&m=${pmo}">← 上個月</a>${isCurYm?'':`<a class="btn sm" href="#/trip?y=${ny}&m=${nmo}">下個月 →</a><a class="btn sm link" href="#/trip">回本月</a>`}`}
+    <a class="btn sm link" href="#/trip${showAll?'':'?all=1'}">${showAll?'只看單月':'顯示全部月份'}</a>
+  </div>`;
+  const inRange = d => showAll || String(d||'').startsWith(ym);
+  const trips=DB.trips.filter(t=>String(t.emp)===String(e.id) && inRange(t.start)).slice().reverse();
+  const outs=DB.outings.filter(o=>String(o.emp)===String(e.id) && inRange(o.date)).slice().reverse();
+  const wfh=DB.wfh.filter(w=>String(w.emp)===String(e.id) && inRange(w.date)).slice().reverse();
   const tone={APPROVED:'good',PENDING:'warn',REJECTED:'bad',CANCELLED:''};
   const tw={APPROVED:'✅ 已核准',PENDING:'⏳ 簽核中',REJECTED:'✖ 已駁回',CANCELLED:'已取消'};
   const bd=s=>`<span class="badge ${tone[s]}">${tw[s]}</span>`;
   const act=(kind,r)=>`<td style="white-space:nowrap">${editableReq(r)?`<a class="btn link" href="#/trip/new?id=${r.id}">編輯</a>　<button class="btn link" data-act="cancelReq" data-kind="${kind}" data-id="${r.id}">取消</button>`:''}</td>`;
   return `<div class="stack">
-    <div class="row" style="justify-content:space-between"><div class="muted">出差 / 外出公出 / 遠距工作</div><a class="btn primary" href="#/trip/new">🚗 新增申請</a></div>
+    <div class="row" style="justify-content:space-between"><div class="muted">出差 / 外出公出 / 遠距工作${showAll?'（全部月份）':`（${yr} 年 ${mo} 月）`}</div><a class="btn primary" href="#/trip/new">🚗 新增申請</a></div>
+    ${monthNav}
     <div class="panel"><h2>✈️ 出差</h2><div class="tablewrap"><table>
       <thead><tr><th>期間</th><th>範圍</th><th>目的地</th><th>事由</th><th>預估差旅費</th><th>出差津貼</th><th>狀態</th><th></th></tr></thead>
       <tbody>${trips.length?trips.map(t=>`<tr><td class="mono">${fmtD(t.start).slice(5)}–${fmtD(t.end).slice(5)}</td><td>${t.scope==='OVERSEAS'?'國外':'國內'}</td><td>${t.dest}</td><td class="muted">${esc(t.purpose)}</td><td class="num">${t.cost!=null?money(t.cost):'—'}</td><td class="num">${t.perDiem?money(t.perDiem):'—'}<span class="subnote"> ${t.days||''}日×${t.pdRate||''}</span></td><td>${bd(t.status)}</td>${act('trip',t)}</tr>`).join(''):'<tr><td colspan="8" class="muted" style="text-align:center;padding:20px">—</td></tr>'}</tbody>
@@ -1558,6 +1666,7 @@ V.hr = () => {
   const rows = EMP.map(e=>`<tr>
     <td class="mono">${e.no}</td>
     <td><a class="btn link" href="#/attendance?e=${e.id}">${e.name}</a></td>
+    <td><a class="btn link" href="#/idcard?id=${e.id}">🪪 人事卡</a></td>
     <td class="mono">${e.username}</td>
     <td>${DEPTS[e.dept]} / ${e.title}</td>
     <td>${ROLE_LABEL[e.role]}</td>
@@ -1572,12 +1681,11 @@ V.hr = () => {
     <td class="num">${e.laborSelf?money(e.laborSelf):'—'}</td>
     <td class="num">${e.healthSelf?money(e.healthSelf):'—'}</td>
     <td class="chain">${(e.flow&&e.flow.length)?e.flow.map(id=>emp(id)?emp(id).name:'—').join(' → '):(e.mgr?emp(e.mgr).name:'—')}</td>
-    <td><a class="btn link" href="#/idcard?id=${e.id}">🪪 人事卡</a></td>
   </tr>`).join('');
   return `<div class="stack">
     <div class="muted">員工主檔 · 點姓名看該員當月考勤與異常；特休依到職日（週年制）自動計算。點「人事卡」看基本資料；編輯薪資／帳號／津貼／眷屬／簽核流程請至「員工管理」。</div>
     <div class="panel"><div class="tablewrap"><table>
-      <thead><tr><th>工號</th><th>姓名</th><th>帳號</th><th>部門 / 職稱</th><th>角色</th><th>到職日</th><th>年資</th><th>特休</th><th>月薪</th><th>伙食</th><th>主管</th><th>其他</th><th>眷口</th><th>勞+就保</th><th>健保</th><th>簽核流程</th><th></th></tr></thead>
+      <thead><tr><th>工號</th><th>姓名</th><th></th><th>帳號</th><th>部門 / 職稱</th><th>角色</th><th>到職日</th><th>年資</th><th>特休</th><th>月薪</th><th>伙食</th><th>主管</th><th>其他</th><th>眷口</th><th>勞+就保</th><th>健保</th><th>簽核流程</th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div></div>
   </div>`;
@@ -1670,6 +1778,13 @@ V.staff = () => {
           <div class="field"><label>緊急聯絡人姓名</label><input name="ecName" value="${e?esc(e.ecName||''):''}"></div>
           <div class="field"><label>與本人關係</label><input name="ecRel" value="${e?esc(e.ecRel||''):''}"></div>
           <div class="field"><label>緊急聯絡人電話</label><input name="ecPhone" value="${e?esc(e.ecPhone||''):''}"></div>
+        </div>
+        <div class="subnote" style="font-size:12px;font-weight:700;color:var(--brand);letter-spacing:1px;margin:18px 0 8px">⑤ 到職報到繳交清單</div>
+        <div class="muted" style="font-size:12px;margin-bottom:8px">收到文件才勾選；未勾選且已到職超過 ${ONBOARD_GRACE_DAYS} 天，會在該員工自己的首頁顯示提醒他補交。</div>
+        <div class="formgrid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+          ${ONBOARD_DOCS.map(d=>`<label style="font-weight:400;font-size:13px;display:flex;gap:6px;align-items:center">
+            <input type="checkbox" name="doc_${d.code}" value="1" ${e&&e.onboardDocs&&e.onboardDocs[d.code]?'checked':''} style="width:auto"> ${d.name}
+          </label>`).join('')}
         </div>
         <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
           <div class="field" style="max-width:none"><label>假單簽核流程（依序）</label>
@@ -2012,7 +2127,14 @@ V.reports = () => {
 
 /* =========================  互動處理  ========================= */
 const readForm = f => { const o={}; new FormData(f).forEach((v,k)=>o[k]=v); return o; };
-const errMsg = m => { const el=document.getElementById('formMsg'); if(el) el.innerHTML=`<div class="flash err" style="margin:12px 0 0">⚠️ ${esc(m)}</div>`; };
+/* 表單驗證失敗訊息：formMsg 常常在表單最下方，使用者按送出後看不到訊息會以為系統沒反應，
+   所以除了顯示紅框警示（含晃動動畫）外，還要主動捲動到看得見的地方。 */
+const errMsg = m => {
+  const el = document.getElementById('formMsg');
+  if (!el) return;
+  el.innerHTML = `<div class="flash err" style="margin:12px 0 0">⚠️ ${esc(m)}</div>`;
+  el.scrollIntoView({ behavior:'smooth', block:'center' });
+};
 
 /* ---- 自行送出之申請：查詢 / 可否修改 / 取消 ---- */
 const REQ_ARR = { leave:'leaves', overtime:'overtime', trip:'trips', outing:'outings', wfh:'wfh' };
@@ -2245,7 +2367,8 @@ function saveStaff(fd, id){
     dependents:Math.max(0,Math.round(num(fd.dependents))), laborSelf:num(fd.laborSelf), healthSelf:num(fd.healthSelf),
     healthDepartFull: fd.healthDepartFull==='1', flow,
     idNo:(fd.idNo||'').trim(), birthDate:fd.birthDate||'', mobile:(fd.mobile||'').trim(),
-    homeAddr:(fd.homeAddr||'').trim(), ecName:(fd.ecName||'').trim(), ecRel:(fd.ecRel||'').trim(), ecPhone:(fd.ecPhone||'').trim() };
+    homeAddr:(fd.homeAddr||'').trim(), ecName:(fd.ecName||'').trim(), ecRel:(fd.ecRel||'').trim(), ecPhone:(fd.ecPhone||'').trim(),
+    onboardDocs: Object.fromEntries(ONBOARD_DOCS.map(d=>[d.code, fd['doc_'+d.code]==='1'])) };
   if (id!=null && id!==''){
     const target = emp(id);
     if (!target){ return errMsg('找不到要編輯的員工（id=' + id + '）。請回員工清單重新點「編輯」。'); }
@@ -2306,7 +2429,7 @@ function buildNav(){
 function bind(){
   const base=state.route.split('?')[0].split('/')[0]||'dashboard';
   document.querySelectorAll('.navlink').forEach(a=>a.classList.toggle('on', a.dataset.r===base));
-  const all=[...NAV,...NAV_ADMIN,{r:'leave/new',label:'請假'},{r:'overtime/new',label:'加班'},{r:'trip/new',label:'出差／外出'},{r:'payslip',label:'薪酬明細'},{r:'my-payslips',label:'我的薪酬'},{r:'idcard',label:'人事卡'},{r:'login',label:'登入'}];
+  const all=[...NAV,...NAV_ADMIN,{r:'leave/new',label:'請假'},{r:'overtime/new',label:'加班'},{r:'trip/new',label:'出差／外出'},{r:'payslip',label:'薪酬明細'},{r:'my-payslips',label:'我的薪酬'},{r:'my-requests',label:'我的申請總覽'},{r:'idcard',label:'人事卡'},{r:'login',label:'登入'}];
   document.getElementById('pageTitle').textContent=(all.find(n=>n.r===state.route.split('?')[0])||all.find(n=>n.r===base)||{label:'首頁'}).label;
 
   document.querySelectorAll('#view [data-act]').forEach(el=>{
