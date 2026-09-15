@@ -540,14 +540,14 @@ function buildSeed(){
 const ANOM = {
   LATE:          { icon:'⏰', label:'遲到',     tone:'warn' },
   EARLY_LEAVE:   { icon:'🏃', label:'早退',     tone:'warn' },
-  MISSING_PUNCH: { icon:'❗', label:'缺卡',     tone:'bad' },
+  MISSING_PUNCH: { icon:'❗', label:'缺卡',     tone:'orange' },
   ABSENT:        { icon:'⛔', label:'曠職',     tone:'bad' },
   OT_NO_REQUEST: { icon:'⚠️', label:'加班未申請', tone:'orange' },
   OUTING_NO_RETURN: { icon:'🚪', label:'外出未歸', tone:'orange' },
 };
 const anomBlock = c => { const a=ANOM[c]; return a?`<span class="ablock ${a.tone}">${a.icon} ${a.label}</span>`:''; };
 const ST_ATT = {
-  NORMAL:['正常','good'], LATE:['遲到','warn'], EARLY:['早退','warn'], ABSENT:['異常','bad'],
+  NORMAL:['正常','good'], LATE:['遲到','warn'], EARLY:['早退','warn'], ABSENT:['曠職','bad'], MISSING:['缺卡','orange'],
   LEAVE:['請假','info'], TRIP:['出差','info'], WFH:['遠距','info'],
   HOLIDAY:['國定假日',''], OFF:['例假／休息',''], OPEN:['出勤中',''], NODATA:['—','']
 };
@@ -680,7 +680,7 @@ function reportSummaryCSV(ym){
 function reportDetailCSV(ym){
   const head = ['工號','姓名','日期','星期','日別','上班','下班','工時(時)','外出時段','遲到(分)','早退(分)','狀態','異常'];
   const dow = d => '日一二三四五六'[new Date(d+'T00:00').getDay()];
-  const STN = { NORMAL:'正常',LATE:'遲到',EARLY:'早退',ABSENT:'異常',LEAVE:'請假',TRIP:'出差',WFH:'遠距',HOLIDAY:'國定假日',OFF:'例假/休息',OPEN:'出勤中',NODATA:'—' };
+  const STN = { NORMAL:'正常',LATE:'遲到',EARLY:'早退',ABSENT:'曠職',MISSING:'缺卡',LEAVE:'請假',TRIP:'出差',WFH:'遠距',HOLIDAY:'國定假日',OFF:'例假/休息',OPEN:'出勤中',NODATA:'—' };
   const AN = { LATE:'遲到',EARLY_LEAVE:'早退',MISSING_PUNCH:'缺卡',ABSENT:'曠職',OUTING_NO_RETURN:'外出未歸' };
   const out = [['綠谷國際 逐日出勤明細', ym],[], head];
   EMP.forEach(m=>{
@@ -957,7 +957,7 @@ function monthAttendance(empId, ym){
       }
       // 當日有已核准的部分假（半日或按時）：該時段屬合法請假，不重複認定遲到／早退（扣薪由假單處理）
       if (leave){ row.late = 0; row.early = 0; row.leaveNote = leave.byHour ? `含 ${leave.hours} 小時${LT(leave.type).name}` : `含半日${LT(leave.type).name}`; }
-      if (row.anomalies.includes('MISSING_PUNCH')) row.status = 'ABSENT';
+      if (row.anomalies.includes('MISSING_PUNCH')) row.status = 'MISSING';   // 缺卡≠曠職：分開的狀態標籤，避免跟真正沒來上班混淆
       else if (row.late>0){ row.status='LATE'; row.anomalies.push('LATE'); }
       else if (row.early>0){ row.status='EARLY'; row.anomalies.push('EARLY_LEAVE'); }
       else row.status = pout ? 'NORMAL' : 'OPEN';
@@ -1023,7 +1023,7 @@ V.attendance = () => {
       <thead><tr><th>日期</th><th>上班</th><th>下班</th><th>工時</th><th>遲到(分)</th><th>早退(分)</th><th>外出時段</th><th>狀態</th><th>異常提醒</th></tr></thead>
       <tbody>${dayRows || '<tr><td colspan="9" class="muted" style="text-align:center;padding:22px">本月尚無紀錄</td></tr>'}</tbody>
     </table></div>
-    <p class="note">工時＝出勤落在 09:00–12:00 與 13:00–18:00 兩段之時間（12:00–13:00 休息已自動扣除，外出時段亦已扣除）。遲到＝上班卡晚於 09:00；早退＝下班卡早於 18:00；應出勤日未打卡且無准假＝曠職；有上班卡缺下班卡＝缺卡；外出後未打返回卡＝外出未歸。<span class="ablock warn">⏰ 遲到</span><span class="ablock warn">🏃 早退</span><span class="ablock bad">❗ 缺卡</span><span class="ablock bad">⛔ 曠職</span><span class="ablock orange">🚪 外出未歸</span></p>
+    <p class="note">工時＝出勤落在 09:00–12:00 與 13:00–18:00 兩段之時間（12:00–13:00 休息已自動扣除，外出時段亦已扣除）。遲到＝上班卡晚於 09:00；早退＝下班卡早於 18:00；應出勤日未打卡且無准假＝曠職（扣一日工資）；有上班卡缺下班卡＝缺卡（僅提醒補登，不視同曠職扣薪）；外出後未打返回卡＝外出未歸。<span class="ablock warn">⏰ 遲到</span><span class="ablock warn">🏃 早退</span><span class="ablock orange">❗ 缺卡</span><span class="ablock bad">⛔ 曠職</span><span class="ablock orange">🚪 外出未歸</span></p>
     </div>
     ${isAdmin() ? adminPunchPanel(e) : ''}
   </div>`;
