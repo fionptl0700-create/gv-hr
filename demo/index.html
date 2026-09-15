@@ -16,6 +16,7 @@
     --bad:#A93A31; --bad-bg:#F7E9E7;
     --focus:#3E8266;
     --shadow:0 1px 2px rgba(20,40,32,.06), 0 4px 16px -8px rgba(20,40,32,.10);
+    --morandi-1:#E8DAD6; --morandi-2:#DCE3D6; --morandi-3:#D8E0E3; --morandi-4:#EAE2D6;
     color-scheme: light;
   }
   @media (prefers-color-scheme: dark) {
@@ -31,6 +32,7 @@
       --bad:#E27A6E; --bad-bg:#2C1A17;
       --focus:#6FA88F;
       --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px -10px rgba(0,0,0,.5);
+      --morandi-1:#3A2E2C; --morandi-2:#2A3128; --morandi-3:#273239; --morandi-4:#39331F;
       color-scheme: dark;
     }
   }
@@ -46,6 +48,7 @@
     --bad:#E27A6E; --bad-bg:#2C1A17;
     --focus:#6FA88F;
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px -10px rgba(0,0,0,.5);
+    --morandi-1:#3A2E2C; --morandi-2:#2A3128; --morandi-3:#273239; --morandi-4:#39331F;
     color-scheme: dark;
   }
 
@@ -931,10 +934,10 @@ V.dashboard = () => {
     <h2 style="font-size:17px">🏠 嗨，${e.name}
       <span class="muted" style="font-family:'Noto Sans TC';font-size:13px;font-weight:400">　${fmtD(TODAY)}（${dow}）· ${DEPTS[e.dept]} · 台北正常班 09:00–18:00</span></h2>
     <div class="tiles">
-      <div class="tile"><div class="k">🕘 今日上班</div><div class="v">${inP?fmtT(inP.ts):'--:--'}</div><div class="hint">${inP?'已簽到':'尚未簽到'}</div></div>
-      <div class="tile"><div class="k">🕕 今日下班</div><div class="v">${outP?fmtT(outP.ts):'--:--'}</div><div class="hint">${outP?'已簽退':'尚未簽退'}</div></div>
-      <div class="tile"><div class="k">🏝️ 特休剩餘</div><div class="v">${per.granted-used-pend}</div><div class="hint">給假 ${per.granted} 日 · ${fmtD(per.end)} 到期</div></div>
-      <div class="tile"><div class="k">${approver?'✅ 待我簽核':'📤 我送出待簽'}</div><div class="v">${approver?myApprovals:DB.leaves.filter(l=>l.emp===e.id&&l.status==='PENDING').length}</div><div class="hint">${approver?'前往簽核中心':'等待主管簽核'}</div></div>
+      <div class="tile" style="background:var(--morandi-1);border-color:transparent"><div class="k">🕘 今日上班</div><div class="v plain">${inP?fmtT(inP.ts):'--:--'}</div><div class="hint">${inP?'已簽到':'尚未簽到'}</div></div>
+      <div class="tile" style="background:var(--morandi-2);border-color:transparent"><div class="k">🕕 今日下班</div><div class="v plain">${outP?fmtT(outP.ts):'--:--'}</div><div class="hint">${outP?'已簽退':'尚未簽退'}</div></div>
+      <div class="tile" style="background:var(--morandi-3);border-color:transparent"><div class="k">🏝️ 特休剩餘</div><div class="v plain">${per.granted-used-pend}</div><div class="hint">給假 ${per.granted} 日 · ${fmtD(per.end)} 到期</div></div>
+      <div class="tile" style="background:var(--morandi-4);border-color:transparent"><div class="k">${approver?'✅ 待我簽核':'📤 我送出待簽'}</div><div class="v plain">${approver?myApprovals:DB.leaves.filter(l=>l.emp===e.id&&l.status==='PENDING').length}</div><div class="hint">${approver?'前往簽核中心':'等待主管簽核'}</div></div>
     </div>
     <div class="panel"><h2>⚡ 快速操作</h2><div class="row">
       <a class="btn primary" href="#/punch">🕘 上／下班打卡</a>
@@ -943,6 +946,11 @@ V.dashboard = () => {
       <a class="btn" href="#/trip/new">🚗 出差／外出申請</a>
       ${approver?'<a class="btn" href="#/approvals">✅ 簽核中心</a>':''}
     </div></div>
+    ${(() => { const mine = myRequestsAll(e.id); if (!mine.length) return ''; const shown = mine.slice(0,8);
+      return `<div class="panel"><h2>📋 我的申請進度</h2><div class="tablewrap"><table>
+        <thead><tr><th>類型</th><th>內容</th><th>目前進度</th></tr></thead>
+        <tbody>${shown.map(r=>{ const p=reqProgress(r.x); return `<tr><td>${r.kind}</td><td>${r.desc}</td><td><span class="badge ${p.tone}">${p.text}</span></td></tr>`; }).join('')}</tbody>
+      </table></div>${mine.length>8?`<p class="note">僅顯示最新 8 筆，完整記錄請至各申請列表查看。</p>`:''}</div>`; })()}
     <div class="panel"><h2>📅 我的本月考勤（${TODAY.getMonth()+1} 月）</h2>
       <div class="tiles" style="margin-bottom:14px">
         <div class="tile"><div class="k">🚪 外出時數</div><div class="v">${att.outingHours} <span style="font-size:13px">小時</span></div></div>
@@ -1468,6 +1476,34 @@ function tripFieldsHtml(kind, rec){
     <p class="note">國外 / 逾 3 天 / 逾預算 NT$30,000 → 自動加簽部門主管與人資。</p>`;
 }
 
+/* 我送出的所有申請（各類型合併），供首頁「我的申請進度」顯示目前卡在哪一關 */
+function myRequestsAll(uid){
+  const mine = arr => arr.filter(x=>String(x.emp)===String(uid));
+  const out = [
+    ...mine(DB.leaves).map(x=>({ kind:'📝 請假', desc:`${LT(x.type).name}　${fmtD(x.start).slice(5)}${x.start!==x.end?'–'+fmtD(x.end).slice(5):''}　${x.byHour?x.hours+' 小時':(x.days===0.5?'半日':x.days+' 日')}`, x })),
+    ...mine(DB.overtime).map(x=>({ kind:'⏱️ 加班', desc:`${fmtD(x.date).slice(5)}　${x.start}–${x.end}　${x.hours} 小時`, x })),
+    ...mine(DB.trips).map(x=>({ kind:'✈️ 出差', desc:`${fmtD(x.start).slice(5)}${x.start!==x.end?'–'+fmtD(x.end).slice(5):''}　${esc(x.dest||'')}`, x })),
+    ...mine(DB.outings).map(x=>({ kind:'🚪 外出', desc:`${fmtD(x.date).slice(5)}　${x.start}–${x.end}`, x })),
+    ...mine(DB.wfh).map(x=>({ kind:'🏠 遠距', desc:fmtD(x.date).slice(5), x })),
+  ];
+  return out.sort((a,b)=>(+b.x.id||0)-(+a.x.id||0));
+}
+/* 單張申請目前進度的文字與色調（給首頁、列表共用） */
+function reqProgress(x){
+  const steps = x.steps||[];
+  if (x.status==='CANCELLED') return { tone:'', text:'已取消' };
+  if (x.status==='APPROVED')  return { tone:'good', text:'✅ 已核准' };
+  if (x.status==='REJECTED'){
+    const i = steps.findIndex(s=>s.st==='REJECTED');
+    const who = i>=0 ? (emp(steps[i].by)||{}).name : '';
+    const cmt = i>=0 ? steps[i].cmt : '';
+    return { tone:'bad', text:`✖ 已駁回${who?`（${who}${cmt?'：'+esc(cmt):''}）`:''}` };
+  }
+  const i = steps.findIndex(s=>s.st==='PENDING');
+  const who = i>=0 ? (emp(steps[i].by)||{}).name : '';
+  const done = steps.filter(s=>s.st==='APPROVED').length;
+  return { tone:'warn', text:`⏳ 簽核中（${done}/${steps.length}${who?'，待 '+who+' 簽核':''}）` };
+}
 /* ---- 簽核 ---- */
 function pendingApprovalsFor(uid){
   const out=[];
@@ -1536,13 +1572,42 @@ V.hr = () => {
     <td class="num">${e.laborSelf?money(e.laborSelf):'—'}</td>
     <td class="num">${e.healthSelf?money(e.healthSelf):'—'}</td>
     <td class="chain">${(e.flow&&e.flow.length)?e.flow.map(id=>emp(id)?emp(id).name:'—').join(' → '):(e.mgr?emp(e.mgr).name:'—')}</td>
+    <td><a class="btn link" href="#/idcard?id=${e.id}">🪪 人事卡</a></td>
   </tr>`).join('');
   return `<div class="stack">
-    <div class="muted">員工主檔 · 點姓名看該員當月考勤與異常；特休依到職日（週年制）自動計算。編輯薪資／帳號／津貼／眷屬／簽核流程請至「員工管理」。</div>
+    <div class="muted">員工主檔 · 點姓名看該員當月考勤與異常；特休依到職日（週年制）自動計算。點「人事卡」看基本資料；編輯薪資／帳號／津貼／眷屬／簽核流程請至「員工管理」。</div>
     <div class="panel"><div class="tablewrap"><table>
-      <thead><tr><th>工號</th><th>姓名</th><th>帳號</th><th>部門 / 職稱</th><th>角色</th><th>到職日</th><th>年資</th><th>特休</th><th>月薪</th><th>伙食</th><th>主管</th><th>其他</th><th>眷口</th><th>勞+就保</th><th>健保</th><th>簽核流程</th></tr></thead>
+      <thead><tr><th>工號</th><th>姓名</th><th>帳號</th><th>部門 / 職稱</th><th>角色</th><th>到職日</th><th>年資</th><th>特休</th><th>月薪</th><th>伙食</th><th>主管</th><th>其他</th><th>眷口</th><th>勞+就保</th><th>健保</th><th>簽核流程</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div></div>
+  </div>`;
+};
+
+/* ---- 人事卡（單人基本資料，簡化版；管理員限定） ---- */
+V.idcard = () => {
+  if (!isAdmin()) return `<div class="panel"><p class="muted">🔒 「人事卡」僅具管理權限（管理員）者可檢視。</p></div>`;
+  const q = new URLSearchParams(state.route.split('?')[1]||'');
+  const e = emp(q.get('id'));
+  if (!e) return `<div class="stack"><a class="btn link" href="#/hr">← 返回人資大表</a><div class="panel"><p class="muted">找不到此員工。</p></div></div>`;
+  const row = (k,v) => `<div class="field"><label>${k}</label><div style="padding:8px 0;font-weight:600">${v||'<span class="muted">—</span>'}</div></div>`;
+  return `<div class="stack">
+    <a class="btn link" href="#/hr">← 返回人資大表</a>
+    <div class="panel"><h2>🪪 人事卡 — ${e.name}</h2>
+      <div class="subnote" style="font-size:12px;font-weight:700;color:var(--brand);letter-spacing:1px;margin-bottom:4px">基本資料</div>
+      <div class="formgrid">
+        ${row('中文姓名', esc(e.name))}${row('員工編號', e.no)}${row('部門 / 職稱', `${DEPTS[e.dept]} / ${esc(e.title||'')}`)}
+        ${row('到職日期', fmtD(e.hire))}${row('身分證字號', e.idNo?esc(e.idNo):'')}${row('出生日期', e.birthDate?fmtD(e.birthDate):'')}
+      </div>
+      <div class="subnote" style="font-size:12px;font-weight:700;color:var(--brand);letter-spacing:1px;margin:16px 0 4px">聯絡資訊</div>
+      <div class="formgrid">
+        ${row('手機', e.mobile?esc(e.mobile):'')}${row('登入帳號', e.username)}${row('戶籍／通訊地址', e.homeAddr?esc(e.homeAddr):'')}
+      </div>
+      <div class="subnote" style="font-size:12px;font-weight:700;color:var(--brand);letter-spacing:1px;margin:16px 0 4px">緊急聯絡人</div>
+      <div class="formgrid">
+        ${row('姓名', e.ecName?esc(e.ecName):'')}${row('關係', e.ecRel?esc(e.ecRel):'')}${row('電話', e.ecPhone?esc(e.ecPhone):'')}
+      </div>
+      <div class="row" style="margin-top:14px"><a class="btn" href="#/staff?id=${e.id}">✏️ 編輯人事卡資料</a></div>
+    </div>
   </div>`;
 };
 
@@ -1595,6 +1660,16 @@ V.staff = () => {
           <div class="field"><label>勞保＋就保自付額（NT$/月）</label><input type="number" id="fLaborSelf" name="laborSelf" value="${e?e.laborSelf:insuranceSelf(43000).laborSelf}" min="0"><span class="subnote">投保薪資 × 12.5% × 20%（2026），可手動微調</span></div>
           <div class="field"><label>健保自付額（NT$/月）</label><input type="number" id="fHealthSelf" name="healthSelf" value="${e?e.healthSelf:insuranceSelf(43000).healthSelf}" min="0"><span class="subnote">投保金額 × 5.17% × 30% ×（本人＋眷口），可手動微調</span></div>
           <div class="field"><label>離職當月健保</label><label style="font-weight:400;font-size:13px;display:flex;gap:6px;align-items:center;padding-top:4px"><input type="checkbox" name="healthDepartFull" value="1" ${e&&e.healthDepartFull?'checked':''} style="width:auto"> 仍收整月保費</label><span class="subnote">預設：月中離職、月底已退保 → 當月不收</span></div>
+        </div>
+        <div class="subnote" style="font-size:12px;font-weight:700;color:var(--brand);letter-spacing:1px;margin:18px 0 8px">④ 人事卡資料（基本聯絡資訊，簡化版）</div>
+        <div class="formgrid">
+          <div class="field"><label>身分證字號</label><input name="idNo" value="${e?esc(e.idNo||''):''}"></div>
+          <div class="field"><label>出生日期</label><input type="date" name="birthDate" value="${e&&e.birthDate?e.birthDate:''}"></div>
+          <div class="field"><label>手機</label><input name="mobile" value="${e?esc(e.mobile||''):''}"></div>
+          <div class="field" style="grid-column:1/-1"><label>戶籍／通訊地址</label><input name="homeAddr" value="${e?esc(e.homeAddr||''):''}"></div>
+          <div class="field"><label>緊急聯絡人姓名</label><input name="ecName" value="${e?esc(e.ecName||''):''}"></div>
+          <div class="field"><label>與本人關係</label><input name="ecRel" value="${e?esc(e.ecRel||''):''}"></div>
+          <div class="field"><label>緊急聯絡人電話</label><input name="ecPhone" value="${e?esc(e.ecPhone||''):''}"></div>
         </div>
         <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
           <div class="field" style="max-width:none"><label>假單簽核流程（依序）</label>
@@ -2168,7 +2243,9 @@ function saveStaff(fd, id){
     title:fd.title||'', role:fd.role||'EMPLOYEE', hire:fd.hire||ymd(TODAY), leaveDate:fd.leaveDate||null,
     salary:num(fd.salary), meal:num(fd.meal), mgrAllow:num(fd.mgrAllow), otherAllow:num(fd.otherAllow),
     dependents:Math.max(0,Math.round(num(fd.dependents))), laborSelf:num(fd.laborSelf), healthSelf:num(fd.healthSelf),
-    healthDepartFull: fd.healthDepartFull==='1', flow };
+    healthDepartFull: fd.healthDepartFull==='1', flow,
+    idNo:(fd.idNo||'').trim(), birthDate:fd.birthDate||'', mobile:(fd.mobile||'').trim(),
+    homeAddr:(fd.homeAddr||'').trim(), ecName:(fd.ecName||'').trim(), ecRel:(fd.ecRel||'').trim(), ecPhone:(fd.ecPhone||'').trim() };
   if (id!=null && id!==''){
     const target = emp(id);
     if (!target){ return errMsg('找不到要編輯的員工（id=' + id + '）。請回員工清單重新點「編輯」。'); }
@@ -2229,7 +2306,7 @@ function buildNav(){
 function bind(){
   const base=state.route.split('?')[0].split('/')[0]||'dashboard';
   document.querySelectorAll('.navlink').forEach(a=>a.classList.toggle('on', a.dataset.r===base));
-  const all=[...NAV,...NAV_ADMIN,{r:'leave/new',label:'請假'},{r:'overtime/new',label:'加班'},{r:'trip/new',label:'出差／外出'},{r:'payslip',label:'薪酬明細'},{r:'my-payslips',label:'我的薪酬'},{r:'login',label:'登入'}];
+  const all=[...NAV,...NAV_ADMIN,{r:'leave/new',label:'請假'},{r:'overtime/new',label:'加班'},{r:'trip/new',label:'出差／外出'},{r:'payslip',label:'薪酬明細'},{r:'my-payslips',label:'我的薪酬'},{r:'idcard',label:'人事卡'},{r:'login',label:'登入'}];
   document.getElementById('pageTitle').textContent=(all.find(n=>n.r===state.route.split('?')[0])||all.find(n=>n.r===base)||{label:'首頁'}).label;
 
   document.querySelectorAll('#view [data-act]').forEach(el=>{
