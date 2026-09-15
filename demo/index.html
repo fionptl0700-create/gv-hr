@@ -462,9 +462,9 @@ function insuranceSelf(grossWage, dependents){
    一般同仁預設簽核流程 = 一階 → 二階；可於員工管理逐人覆寫 */
 const DEFAULT_FLOW = [1, 2];
 const SEED_EMP = [
-  { id:1, no:'GV001', name:'郭銘柔', username:'admin',   dept:1, title:'營運總監（一階主管）', role:'ADMIN',    hire:'2017-03-01', salary:150000, meal:3000, mgrAllow:8000,  otherAllow:0, dependents:0, mgr:2,    flow:[2] },
-  { id:2, no:'GV002', name:'Johnson', username:'johnson', dept:1, title:'執行長（二階主管）',   role:'MANAGER',  hire:'2016-01-01', salary:80000,  meal:3000, mgrAllow:12000, otherAllow:0, dependents:0, mgr:null, flow:[1] },
-  { id:3, no:'GV003', name:'測試員 test', username:'test', dept:2, title:'設計師（一般同仁）', role:'EMPLOYEE', hire:'2022-03-01', salary:30000,  meal:3000, mgrAllow:0, otherAllow:0, dependents:0, mgr:1, flow:[1,2] },
+  { id:1, no:'GV001', name:'郭銘柔', username:'admin',   dept:1, title:'營運總監（一階主管）', role:'ADMIN',    hire:'2017-03-01', salary:147000, meal:3000, mgrAllow:8000,  otherAllow:0, dependents:0, mgr:2,    flow:[2] },
+  { id:2, no:'GV002', name:'Johnson', username:'johnson', dept:1, title:'執行長（二階主管）',   role:'MANAGER',  hire:'2016-01-01', salary:77000,  meal:3000, mgrAllow:12000, otherAllow:0, dependents:0, mgr:null, flow:[1] },
+  { id:3, no:'GV003', name:'測試員 test', username:'test', dept:2, title:'設計師（一般同仁）', role:'EMPLOYEE', hire:'2022-03-01', salary:27000,  meal:3000, mgrAllow:0, otherAllow:0, dependents:0, mgr:1, flow:[1,2] },
 ].map(e=>{ const ins = insuranceSelf(e.salary + (e.mgrAllow||0) + (e.otherAllow||0) + (e.meal||0), e.dependents);
   return { ...e, laborSelf:ins.laborSelf, healthSelf:ins.healthSelf }; });
 let EMP = [];                          // 由 hydrate() 從雲端資料庫或種子載入
@@ -527,7 +527,7 @@ function buildSeed(){
       { id:2, emp:3, type:'ANNUAL', start:d(Math.min(dimM,today+7)), end:d(Math.min(dimM,today+8)), days:2, hours:16, reason:'家庭旅遊', attach:'', status:'PENDING', steps:[{by:1,st:'PENDING'},{by:2,st:'PENDING'}] },
     ],
     overtime: [
-      { id:3, emp:3, date:otDay, start:'18:00', end:'20:30', hours:2.5, dayType:twDayType(otDay), comp:'PAY', reason:'客戶修改稿', wageBase:30000, status:'PENDING', estPay:overtimePay(30000,2.5,twDayType(otDay)), steps:[{by:1,st:'PENDING'},{by:2,st:'PENDING'}] },
+      { id:3, emp:3, date:otDay, start:'18:00', end:'20:30', hours:2.5, dayType:twDayType(otDay), comp:'PAY', reason:'客戶修改稿', wageBase:27000, status:'PENDING', estPay:overtimePay(27000,2.5,twDayType(otDay)), steps:[{by:1,st:'PENDING'},{by:2,st:'PENDING'}] },
     ],
     trips:   [ { id:4, emp:2, scope:'DOMESTIC', start:ymd(TODAY), end:d(Math.min(dimM,today+1)), dest:'台中', purpose:'客戶提案簡報', cost:4500, days:2, pdRate:1500, perDiem:3000, status:'APPROVED', steps:[{by:1,st:'APPROVED'}] } ],
     outings: [],
@@ -1447,7 +1447,7 @@ V.staff = () => {
         </div>
         <div class="subnote" style="font-size:12px;font-weight:700;color:var(--brand);letter-spacing:1px;margin:18px 0 8px">② 薪資（本薪＋固定津貼）</div>
         <div class="formgrid">
-          <div class="field"><label>月薪（本薪，NT$）</label><input type="number" id="fSalary" name="salary" value="${e?e.salary:40000}" min="0"><span class="subnote">輸入本薪／津貼 → 勞健保依投保級距自動帶入</span></div>
+          <div class="field"><label>月薪（本薪，NT$）</label><input type="number" id="fSalary" name="salary" value="${e?e.salary:40000}" min="0"><span class="subnote">⚠️ 不含伙食津貼，伙食請填下方獨立欄位；談的「月薪」若已內含 3,000 伙食，本欄請填「談定金額 − 3,000」</span></div>
           <div class="field"><label>伙食津貼（NT$/月）</label><input type="number" name="meal" value="${e?e.meal:3000}" min="0"><span class="subnote">免稅上限 3,000</span></div>
           <div class="field"><label>主管津貼（NT$/月）</label><input type="number" name="mgrAllow" value="${e?e.mgrAllow:0}" min="0"></div>
           <div class="field"><label>其他津貼（NT$/月）</label><input type="number" name="otherAllow" value="${e?e.otherAllow:0}" min="0"></div>
