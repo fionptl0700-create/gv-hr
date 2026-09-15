@@ -190,6 +190,15 @@
     .content { padding:18px 16px 50px; }
   }
   @media (prefers-reduced-motion:reduce){ * { transition:none !important; } }
+  .print-header { display:none; }
+  @media print {
+    .side, .topbar, .no-print { display:none !important; }
+    .app { display:block !important; }
+    .content { padding:0 !important; max-width:none !important; }
+    body { background:#fff !important; color:#000 !important; }
+    .panel { box-shadow:none !important; border:1px solid #ccc !important; break-inside:avoid; }
+    .print-header { display:block !important; margin-bottom:14px; }
+  }
 </style>
 
 <div class="app">
@@ -415,7 +424,7 @@ const HOURLY_LEAVE = new Set(['ANNUAL','PERSONAL','SICK','FAMILY_CARE','PRENATAL
 function compTimePool(empId, asOf){
   asOf = asOf || TODAY;
   let active = 0, expiring = 0, expired = 0;
-  DB.overtime.filter(o=>String(o.emp)===String(empId) && o.status==='APPROVED' && o.comp==='COMP_TIME').forEach(o=>{
+  DB.overtime.filter(o=>String(o.emp)===String(empId) && o.status==='APPROVED' && o.comp==='COMP_TIME' && !o.compPaidOut).forEach(o=>{
     const exp = new Date(o.date+'T00:00'); exp.setMonth(exp.getMonth()+6);
     if (exp < asOf) { expired += o.hours; }
     else { active += o.hours; if ((exp - asOf)/86400000 <= 30) expiring += o.hours; }
@@ -423,6 +432,23 @@ function compTimePool(empId, asOf){
   const used = DB.leaves.filter(l=>String(l.emp)===String(empId) && l.type==='COMP_OFF' && ['APPROVED','PENDING'].includes(l.status))
     .reduce((s,l)=>s + (l.hours||0), 0);
   return { active, expiring, expired, used, avail: Math.max(0, Math.round((active - used)*100)/100) };
+}
+/* 補休逾 6 個月未休（§32-1）：找出「在這個月到期」且尚未結算過的加班換休時數，
+   依原加班當時的日別／工資基準試算應改發之加班費，供薪資試算／確認時自動列入應發項目。
+   confirmPayslip() 確認時會把這些紀錄標記 compPaidOut，避免下個月重複結算。 */
+function expiredCompPayout(empId, ym, wageBase){
+  const [yr, mo] = ym.split('-').map(Number);
+  const mStart = new Date(yr, mo-1, 1), mEnd = new Date(yr, mo, 0, 23, 59, 59);
+  let hours = 0, pay = 0; const ids = [];
+  DB.overtime.filter(o=>String(o.emp)===String(empId) && o.status==='APPROVED' && o.comp==='COMP_TIME' && !o.compPaidOut).forEach(o=>{
+    const exp = new Date(o.date+'T00:00'); exp.setMonth(exp.getMonth()+6);
+    if (exp >= mStart && exp <= mEnd){
+      hours += o.hours;
+      pay += overtimePay(o.wageBase || wageBase, o.hours, o.dayType);
+      ids.push(o.id);
+    }
+  });
+  return { hours: Math.round(hours*100)/100, pay: Math.round(pay), ids };
 }
 const canHourly = code => HOURLY_LEAVE.has(code);
 const paidLabel = p => p>=1?'全薪':p===0.5?'半薪':'無薪';
@@ -483,6 +509,11 @@ const DB = { punches:[], leaves:[], overtime:[], trips:[], outings:[], wfh:[], a
 /* 稽核軌跡：誰、何時、對誰、做了什麼。保留最近 800 筆。 */
 function pushAudit(action, target, detail){
   try {
+    if (DB.audit.length === 0){
+      // 第一次寫入稽核軌跡：留一筆起始說明，讓看的人知道「這之前的操作沒有回溯記錄」
+      DB.audit.push({ id:'a'+(++SEQ), at:new Date().toISOString(), by:null, byName:'系統',
+        action:'稽核軌跡啟用', target:'全系統', detail:'此後的操作將被記錄；啟用前的歷史操作不會補登。' });
+    }
     DB.audit.push({ id:'a'+(++SEQ), at:new Date().toISOString(),
       by: state.uid, byName: (emp(state.uid)||{}).name || '系統',
       action: String(action||''), target: String(target||''), detail: String(detail||'') });
@@ -744,6 +775,49 @@ const NAV_ADMIN = [
   { r:'audit',    label:'稽核軌跡',  ic:'📜' },
 ];
 
+/* 首頁「貼心小提醒」：把個人相關、值得主動提醒的小事收攏成一份友善清單（沒事時整塊都不顯示） */
+function dashboardTips(e){
+  const tips = [];
+  const today = ymd(TODAY);
+  const todaysPunches = DB.punches.filter(p=>String(p.emp)===String(e.id) && String(p.ts).slice(0,10)===today);
+  const outTrail = todaysPunches.filter(p=>p.type==='OUTING_OUT'||p.type==='OUTING_IN').sort((a,b)=>String(a.ts).localeCompare(String(b.ts)));
+  const stillOut = outTrail.length && outTrail[outTrail.length-1].type==='OUTING_OUT';
+  if (stillOut){
+    tips.push({ icon:'🚪', text:`你目前顯示「外出中」（${fmtT(outTrail[outTrail.length-1].ts)} 外出），回來後別忘了打「外出返回」喔。`, href:'#/punch' });
+  }
+  const dt = twDayType(today);
+  const onLeaveToday = DB.leaves.find(l=>String(l.emp)===String(e.id)&&l.status==='APPROVED'&&l.start<=today&&l.end>=today&&l.days>=1);
+  const onTripToday  = DB.trips.find(t=>String(t.emp)===String(e.id)&&t.status==='APPROVED'&&t.start<=today&&t.end>=today);
+  const onWfhToday   = DB.wfh.find(w=>String(w.emp)===String(e.id)&&w.status==='APPROVED'&&w.date===today);
+  const hasInToday   = todaysPunches.some(p=>p.type==='IN');
+  const nowMin = TODAY.getHours()*60 + TODAY.getMinutes();
+  if (dt==='WORKDAY' && !onLeaveToday && !onTripToday && !onWfhToday && !hasInToday && nowMin>=555){
+    tips.push({ icon:'🕘', text:'還沒看到你今天的上班打卡，別忘了打卡喔！', href:'#/punch' });
+  }
+  const att = monthAttendance(e.id, curMonth());
+  if (att.missing>0){
+    tips.push({ icon:'❗', text:`這個月有 ${att.missing} 天忘記打下班卡，記得跟管理員說一聲幫忙補登喔。`, href:'#/attendance' });
+  }
+  const pool = compTimePool(e.id);
+  if (pool.expiring>0) tips.push({ icon:'🔁', text:`你有 ${pool.expiring} 小時補休將於 30 天內到期，記得安排時間用掉喔。`, href:'#/leave/new' });
+  if (pool.expired>0)  tips.push({ icon:'🔁', text:`你有 ${pool.expired} 小時補休已超過 6 個月沒用，依規定會改發加班費，下次結算薪資時會自動列入。`, href:'#/payroll' });
+  const per = anniversaryPeriod(new Date(e.hire), TODAY);
+  const bal = leaveBalance(e.id, 'ANNUAL');
+  if (per.granted>0 && bal.left>0){
+    const daysLeft = Math.ceil((per.end - TODAY)/86400000);
+    if (daysLeft>=0 && daysLeft<=30) tips.push({ icon:'🏝️', text:`你的特休將於 ${fmtD(per.end)}（還剩 ${daysLeft} 天）到期，還有 ${bal.left} 天沒休，記得安排一下喔。`, href:'#/leave/new' });
+  }
+  if (isApprover(e.id)){
+    const n = pendingApprovalsFor(e.id).length;
+    if (n>0) tips.push({ icon:'✅', text:`有 ${n} 筆單據等你簽核，別忘了抽空處理喔。`, href:'#/approvals' });
+  }
+  DB.trips.filter(t=>String(t.emp)===String(e.id) && t.status==='APPROVED').forEach(t=>{
+    const days = Math.ceil((new Date(t.start+'T00:00') - TODAY)/86400000);
+    if (days>=0 && days<=3) tips.push({ icon:'✈️', text:`你有出差將於 ${fmtD(t.start)} 出發（${esc(t.dest||'')}），記得提前準備喔。`, href:'#/trip' });
+  });
+  return tips;
+}
+
 /* =========================  畫面  ========================= */
 const V = {};
 
@@ -806,9 +880,18 @@ V.dashboard = () => {
     ? att.anomalies.map(a=>anomBlock(a.code)+`<span class="subnote" style="margin-right:10px">${fmtD(a.date).slice(5)}</span>`).join('')
     : `<span class="badge good">✅ 本月無異常</span>`;
 
+  const tips = dashboardTips(e);
+  const tipsPanel = tips.length ? `<div class="panel" style="background:var(--brand-soft);border-color:var(--brand)">
+      <h2 style="color:var(--brand)">💡 貼心小提醒</h2>
+      <div class="stack" style="gap:8px">${tips.map(t=>`<div class="row" style="justify-content:space-between;align-items:center;gap:10px">
+        <div>${t.icon} ${t.text}</div>${t.href?`<a class="btn sm" href="${t.href}" style="white-space:nowrap">前往 →</a>`:''}
+      </div>`).join('')}</div>
+    </div>` : '';
+
   return `
   <div class="stack">
     <div class="banner"><span>👋</span><div>${e.name}，歡迎回來（${ROLE_LABEL[e.role]}）。${isAdmin()?'你可管理全公司資料。':'你只會看到自己的差勤資料。'}${OFFLINE?` <b style="color:var(--bad)">離線模式：資料不會保存（${esc(DB_ERR||'原因未知')}）</b>`:' 資料存雲端資料庫，改版不覆蓋。'}　${fmtD(TODAY)}</div></div>
+    ${tipsPanel}
     <h2 style="font-size:17px">🏠 嗨，${e.name}
       <span class="muted" style="font-family:'Noto Sans TC';font-size:13px;font-weight:400">　${fmtD(TODAY)}（${dow}）· ${DEPTS[e.dept]} · 台北正常班 09:00–18:00</span></h2>
     <div class="tiles">
@@ -855,8 +938,8 @@ V.punch = () => {
       <div class="banner"><span>🕒</span><div>裝置目前時間：<b id="liveClock" class="mono">--:--:--</b>　打卡即以此時間記錄；如與實際時間不符，請確認裝置日期／時區設定是否正確（應為台北時間）。</div></div>
       ${stillOut?`<div class="callout" style="margin-top:10px">🚪 你目前顯示為「外出中」（${fmtT(outingTrail[outingTrail.length-1].ts)} 外出），別忘了回來後打「外出返回」。</div>`:''}
       <div class="formgrid" style="margin-top:12px">${main.map(mkBtn).join('')}</div>
-      <details style="margin-top:12px" ${stillOut?'open':''}><summary style="cursor:pointer;color:var(--brand);font-weight:600;font-size:13px">＋ 更多打卡（外出／加班起訖）</summary>
-        <div class="formgrid" style="margin-top:10px">${more.map(mkBtn).join('')}</div></details>
+      <div class="subnote" style="margin:16px 0 8px;font-weight:700;color:var(--ink-soft)">其他打卡（外出／加班起訖）</div>
+      <div class="formgrid">${more.map(mkBtn).join('')}</div>
       <p class="note">外出簽到／簽退會記錄在下方「今日打卡紀錄」，並在「我的考勤」逐日明細中列出外出時段、自動從當日工時扣除。打卡時記錄 GPS 位置與 IP（正式版加辦公室 GPS 圍籬與 IP 白名單）。</p>
     </div>
     <div class="grid2">
@@ -1043,10 +1126,12 @@ function adminPunchPanel(e){
     <h2 style="color:var(--warn)">🛠️ 打卡調整（管理員代 ${e.name} 修正）</h2>
     <form data-form="adminPunch" data-emp="${e.id}" class="row" style="align-items:flex-end">
       <div class="field"><label>日期</label><input type="date" name="date" value="${ymd(TODAY)}" min="${prevMonth()}-01" max="${ymd(TODAY)}" required></div>
+      <div class="field"><label>結束日期（批次補登用，留空＝只補一天）</label><input type="date" name="endDate" min="${prevMonth()}-01" max="${ymd(TODAY)}"></div>
       <div class="field"><label>類型</label><select name="type">${Object.entries(PT).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div>
       <div class="field" style="width:120px"><label>時間</label><input type="time" name="time" value="09:00" required></div>
       <button class="btn primary" type="submit">＋ 新增打卡</button>
     </form>
+    <p class="note" style="margin-top:6px">填「結束日期」可一次補登一段期間，只會補「平日」（自動跳過週六日／國定假日），已有同類型打卡的那天會自動略過、不會重複新增。</p>
     <div class="tablewrap" style="margin-top:12px"><table>
       <thead><tr><th>日期時間</th><th>類型</th><th></th></tr></thead>
       <tbody>${rows || '<tr><td colspan="3" class="muted" style="text-align:center;padding:16px">本月尚無打卡</td></tr>'}</tbody>
@@ -1054,15 +1139,28 @@ function adminPunchPanel(e){
     <p class="note">新增／刪除打卡都會寫入「稽核軌跡」。要修改某筆時間，請先刪除再新增。</p>
   </div>`;
 }
-function adminAddPunch(empId, date, type, hm){
+function adminAddPunch(empId, date, endDate, type, hm){
   if (!isAdmin()) return;
   const tgt = emp(empId); if (!tgt){ flash='⚠️ 找不到員工'; render(); return; }
   if (!date || !hm){ flash='⚠️ 請填日期與時間'; render(); return; }
-  const ts = `${date}T${hm}`;
-  DB.punches.push({ id:'p'+(++SEQ), emp:tgt.id, type, ts, editedBy:state.uid });
-  savePunchMonth(date.slice(0,7));
-  pushAudit('新增打卡', `${tgt.no} ${tgt.name}`, `${type} @ ${date} ${hm}`);
-  flash = `🛠️ 已為 ${tgt.name} 新增打卡：${fmtD(ts).slice(5)} ${hm}`;
+  const dates = [];
+  if (endDate && endDate > date){
+    let d = new Date(date+'T00:00'); const end = new Date(endDate+'T00:00');
+    while (d <= end){ const ds = ymd(d); if (twDayType(ds)==='WORKDAY') dates.push(ds); d.setDate(d.getDate()+1); }
+  } else dates.push(date);
+  let added = 0, skipped = 0;
+  dates.forEach(ds=>{
+    const dup = DB.punches.some(p=>String(p.emp)===String(tgt.id) && p.type===type && String(p.ts).slice(0,10)===ds);
+    if (dup){ skipped++; return; }
+    DB.punches.push({ id:'p'+(++SEQ), emp:tgt.id, type, ts:`${ds}T${hm}`, editedBy:state.uid });
+    added++;
+  });
+  const months = new Set(dates.map(d=>d.slice(0,7)));
+  months.forEach(m=>savePunchMonth(m));
+  pushAudit('新增打卡', `${tgt.no} ${tgt.name}`, `${type} @ ${hm}，${date}${dates.length>1?`～${endDate}（僅平日）`:''}，新增 ${added} 筆${skipped?`、略過 ${skipped} 筆（已有紀錄）`:''}`);
+  flash = dates.length>1
+    ? `🛠️ 已為 ${tgt.name} 批次新增 ${added} 筆打卡${skipped?`（另有 ${skipped} 天已有紀錄，自動略過）`:''}`
+    : `🛠️ 已為 ${tgt.name} 新增打卡：${fmtD(date).slice(5)} ${hm}`;
   render();
 }
 
@@ -1530,6 +1628,12 @@ V.payroll = () => {
     lateMin:att.late, earlyMin:att.early, absentDays:att.absent,
     unpaidHours:lh.unpaid, halfHours:lh.half, overtimePay:otPay, perDiem, perDiemDays, pdRate:perDiemRate(e.role),
     laborSelf:e.laborSelf, healthSelf: healthActive ? e.healthSelf : 0 });
+  // 補休逾 6 個月未休（§32-1）：本月到期、尚未結算過的，自動改列一筆應發加班費
+  const compOut = expiredCompPayout(eid, ym, wb);
+  if (compOut.pay > 0){
+    r.earnings.push({ label:`補休逾期改發加班費（${compOut.hours} 小時，已逾 6 個月）`, amount:compOut.pay, note:'依原加班當時之日別與工資基準試算' });
+    r.gross += compOut.pay; r.net += compOut.pay;
+  }
   const opts=EMP.map(x=>`<option value="${x.id}" ${x.id===eid?'selected':''}>${x.no} ${x.name}</option>`).join('');
   const slip = DB.payslips.find(p=>String(p.emp)===String(eid) && p.ym===ym);
   const mySlips = DB.payslips.filter(p=>String(p.emp)===String(eid)).slice().sort((a,b)=>b.ym.localeCompare(a.ym));
@@ -1601,14 +1705,29 @@ function confirmPayslip(eid, ym){
     unpaidHours:lh.unpaid, halfHours:lh.half, overtimePay:otPay,
     perDiem:mTrips.reduce((s,t)=>s+(t.perDiem||0),0), perDiemDays:mTrips.reduce((s,t)=>s+(t.days||0),0), pdRate:perDiemRate(e.role),
     laborSelf:e.laborSelf, healthSelf: healthActive ? e.healthSelf : 0 });
+  const idx = DB.payslips.findIndex(p=>String(p.emp)===String(e.id) && p.ym===ym);
+  // 補休逾 6 個月未休（§32-1）：只有第一次確認才結算＋標記 compPaidOut；重新確認時延用當初金額
+  // （避免因記錄已標記過而在第二次確認時消失，同一筆逾期補休不會被結算兩次）
+  let compOut = { hours:0, pay:0, ids:[] };
+  if (idx < 0){
+    compOut = expiredCompPayout(eid, ym, wb);
+  }
+  const priorCompLine = idx>=0 ? (DB.payslips[idx].earnings||[]).find(x=>x.label && x.label.includes('補休逾期改發加班費')) : null;
+  if (compOut.pay > 0){
+    r.earnings.push({ label:`補休逾期改發加班費（${compOut.hours} 小時，已逾 6 個月）`, amount:compOut.pay, note:'依原加班當時之日別與工資基準試算' });
+    r.gross += compOut.pay; r.net += compOut.pay;
+    compOut.ids.forEach(id=>{ const o=DB.overtime.find(x=>String(x.id)===String(id)); if(o) o.compPaidOut=true; });
+  } else if (priorCompLine){
+    r.earnings.push({ ...priorCompLine });
+    r.gross += priorCompLine.amount; r.net += priorCompLine.amount;
+  }
   const rec = { emp:e.id, ym, confirmedAt:new Date().toISOString(), confirmedBy:state.uid,
     empName:e.name, empNo:e.no, title:e.title, dept:e.dept, hire:e.hire, leaveDate:e.leaveDate||null,
     wageBase:wb, employedDays:ed, daysInMonth:dim, partial:r.partial,
     earnings:r.earnings, deductions:r.deductions, gross:r.gross, totDed:r.totDed, net:r.net,
     hourly:r.hourly, daily:r.daily };
-  const idx = DB.payslips.findIndex(p=>String(p.emp)===String(e.id) && p.ym===ym);
   if (idx>=0) DB.payslips[idx]=rec; else DB.payslips.push(rec);
-  pushAudit(idx>=0?'重新確認薪酬明細':'確認薪酬明細', `${e.no} ${e.name}／${ym}`, `應發 ${r.gross}／應扣 ${r.totDed}／實發 ${r.net}`);
+  pushAudit(idx>=0?'重新確認薪酬明細':'確認薪酬明細', `${e.no} ${e.name}／${ym}`, `應發 ${r.gross}／應扣 ${r.totDed}／實發 ${r.net}${compOut.pay?`；含補休逾期改發加班費 ${compOut.pay}`:''}`);
   saveAll();
   flash = `✅ 已確認 ${e.name}／${ym} 薪酬明細（實發 ${money(r.net)}）`;
   location.hash = `#/payslip?e=${e.id}&ym=${ym}`;
@@ -1634,8 +1753,14 @@ V.payslip = () => {
   const p = DB.payslips.find(x=>String(x.emp)===String(eid) && x.ym===ym);
   if (!p) return `<div class="stack"><a class="btn link" href="${isManager()?'#/payroll':'#/my-payslips'}">← 返回</a><div class="panel"><p class="muted">查無此薪酬明細（尚未確認）。</p></div></div>`;
   return `<div class="stack">
-    <a class="btn link" href="${isManager()?`#/payroll?e=${eid}`:'#/my-payslips'}">← 返回</a>
+    <div class="row no-print" style="justify-content:space-between">
+      <a class="btn link" href="${isManager()?`#/payroll?e=${eid}`:'#/my-payslips'}">← 返回</a>
+      <button class="btn" onclick="window.print()">🖨️ 列印／另存 PDF</button>
+    </div>
     <div class="panel">
+      <div class="print-header" style="text-align:center;margin-bottom:16px">
+        <b style="font-family:'Noto Serif TC',serif;font-size:16px">綠谷國際 GV STUDIO</b><br><span style="font-size:13px">薪資明細單</span>
+      </div>
       <div class="row" style="justify-content:space-between;align-items:flex-start">
         <div><h2 style="font-size:17px">📄 薪酬明細　${p.ym}</h2>
           <div class="muted" style="margin-top:4px">${p.empNo}　${p.empName}　·　${DEPTS[p.dept]||''} ${p.title||''}</div></div>
@@ -2063,7 +2188,7 @@ function bind(){
         else if (k==='payroll') location.hash=`#/payroll?e=${fd.e}&y=${fd.y}&m=${fd.m}`;
         else if (k==='reports') location.hash=`#/reports?y=${fd.y}&m=${fd.m}`;
         else if (k==='audit') location.hash=`#/audit?kw=${encodeURIComponent(fd.kw||'')}`;
-        else if (k==='adminPunch') adminAddPunch(form.dataset.emp, fd.date, fd.type, fd.time);
+        else if (k==='adminPunch') adminAddPunch(form.dataset.emp, fd.date, fd.endDate, fd.type, fd.time);
       } catch(err){ errMsg('發生錯誤：'+(err&&err.message||err)); console.error(err); }
     };
   });
