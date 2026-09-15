@@ -234,8 +234,22 @@ function refreshToday(){
 const curMonth = () => ymd(TODAY).slice(0,7);   // 例：2026-09
 const fmtD = s => { const d=new Date(s); return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())}`; };
 const fmtT = s => { const d=new Date(s); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
-/* 打卡當下的 GPS 座標（若瀏覽器有取得並允許）→ 一個純連結，點開用 Google 地圖看位置；不含任何金鑰、不呼叫外部 API */
-const gpsLink = p => (p && p.lat!=null) ? `<a href="https://www.google.com/maps?q=${p.lat},${p.lng}" target="_blank" rel="noopener" title="準確度約 ${Math.round(p.acc||0)} 公尺">📍 查看</a>` : '<span class="muted">—</span>';
+/* 公司地點（僅供打卡時顯示距離參考，不做強制圍籬鎖定）：106台北市大安區忠孝東路四段289號10之6 */
+const OFFICE_LOC = { lat:25.04176, lng:121.5546706, addr:'106台北市大安區忠孝東路四段289號10之6' };
+function distFromOffice(lat,lng){
+  const R=6371000, toRad=d=>d*Math.PI/180;
+  const dLat=toRad(lat-OFFICE_LOC.lat), dLng=toRad(lng-OFFICE_LOC.lng);
+  const a=Math.sin(dLat/2)**2 + Math.cos(toRad(OFFICE_LOC.lat))*Math.cos(toRad(lat))*Math.sin(dLng/2)**2;
+  return Math.round(R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a)));
+}
+/* 打卡當下的 GPS 座標（若瀏覽器有取得並允許）→ 一個純連結，點開用 Google 地圖看位置；不含任何金鑰、不呼叫外部 API。
+   有座標時額外顯示與公司的直線距離，方便管理員判斷是否在辦公室附近打卡（僅供參考，不會擋打卡）。 */
+const gpsLink = p => {
+  if (!p || p.lat==null) return '<span class="muted">—</span>';
+  const d = distFromOffice(p.lat,p.lng);
+  const far = d > 300;
+  return `<a href="https://www.google.com/maps?q=${p.lat},${p.lng}" target="_blank" rel="noopener" title="準確度約 ${Math.round(p.acc||0)} 公尺">📍 查看</a> <span class="${far?'':'muted'}" style="font-size:11px;${far?'color:var(--warn)':''}">${far?'⚠️ ':''}距公司約 ${d>=1000?(d/1000).toFixed(1)+'公里':d+'公尺'}</span>`;
+};
 const money = n => 'NT$ ' + Math.round(n).toLocaleString('en-US');
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -696,32 +710,52 @@ async function exportBackup(){
 }
 const csvCell = v => { v = v==null ? '' : String(v); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; };
 const csvRows = arr => arr.map(r=>r.map(csvCell).join(',')).join('\r\n');
-/* 月出勤彙總 CSV */
-function reportSummaryCSV(ym){
-  const head = ['工號','姓名','部門','應出勤日','有打卡日','實際工時(時)','外出時數(時)','遲到(分)','早退(分)','缺卡(次)','曠職(日)','請假(日)','加班(時)'];
-  const rows = EMP.map(m=>{
-    const a = monthAttendance(m.id, ym);
-    const leaveDays = DB.leaves.filter(l=>String(l.emp)===String(m.id)&&l.status==='APPROVED'&&l.start.startsWith(ym)).reduce((s,l)=>s+l.days,0);
-    const otH = DB.overtime.filter(o=>String(o.emp)===String(m.id)&&o.status==='APPROVED'&&o.date.startsWith(ym)).reduce((s,o)=>s+o.hours,0);
-    const punchDays = new Set(a.rows.filter(r=>r.in&&r.in!=='—'&&r.in!=='遠距').map(r=>r.date));
-    DB.punches.filter(p=>String(p.emp)===String(m.id)&&p.ts.startsWith(ym)).forEach(p=>punchDays.add(p.ts.slice(0,10)));
-    return [m.no, m.name, DEPTS[m.dept], a.workDays, punchDays.size, a.workedHours, a.outingHours, a.late, a.early, a.missing, a.absent, leaveDays, otH];
-  });
-  return csvRows([['綠谷國際 月出勤彙總', ym],[], head, ...rows]);
+/* 展開 YYYY-MM ~ YYYY-MM 之間（含頭尾）每個月份；區間顛倒時只回起始月，避免爆量迴圈 */
+function monthRange(fromYm, toYm){
+  const [y1,m1] = fromYm.split('-').map(Number);
+  const [y2,m2] = (toYm||fromYm).split('-').map(Number);
+  if (y2*12+m2 < y1*12+m1) return [fromYm];
+  const out = []; let y=y1, m=m1;
+  while (y<y2 || (y===y2 && m<=m2)){ out.push(`${y}-${pad(m)}`); m++; if (m>12){ m=1; y++; } }
+  return out;
 }
-/* 逐日出勤明細 CSV（全員；勞檢用） */
-function reportDetailCSV(ym){
+/* 出勤彙總 CSV（可指定月份區間＋單一員工或全員；勞檢／糾紛調閱用） */
+function reportSummaryCSV(fromYm, toYm, empId){
+  toYm = toYm || fromYm;
+  const months = monthRange(fromYm, toYm);
+  const members = empId ? EMP.filter(m=>String(m.id)===String(empId)) : EMP;
+  const head = ['工號','姓名','部門','月份','應出勤日','有打卡日','實際工時(時)','外出時數(時)','遲到(分)','早退(分)','缺卡(次)','曠職(日)','請假(日)','加班(時)'];
+  const rows = [];
+  members.forEach(m=>{
+    months.forEach(ym=>{
+      const a = monthAttendance(m.id, ym);
+      const leaveDays = DB.leaves.filter(l=>String(l.emp)===String(m.id)&&l.status==='APPROVED'&&l.start.startsWith(ym)).reduce((s,l)=>s+l.days,0);
+      const otH = DB.overtime.filter(o=>String(o.emp)===String(m.id)&&o.status==='APPROVED'&&o.date.startsWith(ym)).reduce((s,o)=>s+o.hours,0);
+      const punchDays = new Set(a.rows.filter(r=>r.in&&r.in!=='—'&&r.in!=='遠距').map(r=>r.date));
+      DB.punches.filter(p=>String(p.emp)===String(m.id)&&p.ts.startsWith(ym)).forEach(p=>punchDays.add(p.ts.slice(0,10)));
+      rows.push([m.no, m.name, DEPTS[m.dept], ym, a.workDays, punchDays.size, a.workedHours, a.outingHours, a.late, a.early, a.missing, a.absent, leaveDays, otH]);
+    });
+  });
+  return csvRows([['綠谷國際 出勤彙總', `${fromYm} ~ ${toYm}`],[], head, ...rows]);
+}
+/* 逐日出勤明細 CSV（可指定月份區間＋單一員工或全員；勞檢／糾紛調閱用） */
+function reportDetailCSV(fromYm, toYm, empId){
+  toYm = toYm || fromYm;
+  const months = monthRange(fromYm, toYm);
+  const members = empId ? EMP.filter(m=>String(m.id)===String(empId)) : EMP;
   const head = ['工號','姓名','日期','星期','日別','上班','下班','工時(時)','外出時段','遲到(分)','早退(分)','狀態','異常'];
   const dow = d => '日一二三四五六'[new Date(d+'T00:00').getDay()];
   const STN = { NORMAL:'正常',LATE:'遲到',EARLY:'早退',ABSENT:'曠職',MISSING:'缺卡',LEAVE:'請假',TRIP:'出差',WFH:'遠距',HOLIDAY:'國定假日',OFF:'例假/休息',OPEN:'出勤中',NODATA:'—' };
   const AN = { LATE:'遲到',EARLY_LEAVE:'早退',MISSING_PUNCH:'缺卡',ABSENT:'曠職',OUTING_NO_RETURN:'外出未歸' };
-  const out = [['綠谷國際 逐日出勤明細', ym],[], head];
-  EMP.forEach(m=>{
-    monthAttendance(m.id, ym).rows.forEach(r=>{
-      out.push([ m.no, m.name, r.date, dow(r.date), DT_LABEL[r.dayType]||r.dayType, r.in, r.out,
-        (r.in!=='—'&&r.in!=='遠距'&&r.out!=='—'&&r.out!=='遠距')?hrs(r.worked):'',
-        (r.outings||[]).join('；'),
-        r.late||'', r.early||'', STN[r.status]||r.status, r.anomalies.map(c=>AN[c]||c).join('；') ]);
+  const out = [['綠谷國際 逐日出勤明細', `${fromYm} ~ ${toYm}`],[], head];
+  members.forEach(m=>{
+    months.forEach(ym=>{
+      monthAttendance(m.id, ym).rows.forEach(r=>{
+        out.push([ m.no, m.name, r.date, dow(r.date), DT_LABEL[r.dayType]||r.dayType, r.in, r.out,
+          (r.in!=='—'&&r.in!=='遠距'&&r.out!=='—'&&r.out!=='遠距')?hrs(r.worked):'',
+          (r.outings||[]).join('；'),
+          r.late||'', r.early||'', STN[r.status]||r.status, r.anomalies.map(c=>AN[c]||c).join('；') ]);
+      });
     });
   });
   return csvRows(out);
@@ -1525,11 +1559,11 @@ V.staff = () => {
     <td class="num">${money(x.salary)}</td><td class="num">${money(x.meal)}</td>
     <td class="num">${x.mgrAllow?money(x.mgrAllow):'—'}</td><td class="num">${x.otherAllow?money(x.otherAllow):'—'}</td>
     <td class="chain">${(x.flow&&x.flow.length)?x.flow.map(id=>emp(id)?.name||'—').join(' → '):'（預設：直屬主管）'}</td>
-    <td><a class="btn link" href="#/staff?id=${x.id}">編輯</a></td>
+    <td><a class="btn link" href="#/staff?id=${x.id}">編輯</a> · <a class="btn link" href="#/attendance?e=${x.id}" title="幫此員工補打卡／查看考勤">補打卡</a></td>
   </tr>`).join('');
   return `<div class="stack">
     <div class="row" style="justify-content:space-between">
-      <div class="muted">新增／編輯員工、開立登入帳號與員工編號、設定每位員工的假單簽核流程。</div>
+      <div class="muted">新增／編輯員工、開立登入帳號與員工編號、設定每位員工的假單簽核流程。忘記打卡要幫員工補登，請點該員工列的「補打卡」。</div>
       <a class="btn primary" href="#/staff">＋ 新增員工</a>
     </div>
     <div class="panel"><h2>${e?`✏️ 編輯 — ${e.name}`:'➕ 新增員工'}</h2>
@@ -1824,35 +1858,78 @@ function auditCSV(){
 /* ---- 報表 ---- */
 V.reports = () => {
   if (!isManager()) return `<div class="panel"><p class="muted">🔒 報表僅主管 / 管理員可檢視。</p></div>`;
-  const e=me();
   const q=new URLSearchParams(state.route.split('?')[1]||'');
-  const yr=+q.get('y')||TODAY.getFullYear(), mo=+q.get('m')||(TODAY.getMonth()+1), ym=`${yr}-${pad(mo)}`;
-  const members = EMP;   // 綠谷編制小，主管／管理員皆可檢視全員月彙總
-  const rows=members.map(m=>{
-    const att=monthAttendance(m.id,ym);
-    const leaveDays=DB.leaves.filter(l=>String(l.emp)===String(m.id)&&l.status==='APPROVED'&&l.start.startsWith(ym)).reduce((s,l)=>s+l.days,0);
-    const otMin=DB.overtime.filter(o=>String(o.emp)===String(m.id)&&o.status==='APPROVED'&&o.date.startsWith(ym)).reduce((s,o)=>s+o.hours*60,0);
-    const punchDays=new Set(att.rows.filter(a=>a.in&&a.in!=='—'&&a.in!=='遠距').map(a=>a.date));
-    DB.punches.filter(p=>String(p.emp)===String(m.id)&&p.ts.startsWith(ym)).forEach(p=>punchDays.add(p.ts.slice(0,10)));
-    return `<tr><td class="mono">${m.no}</td><td>${m.name}</td><td>${DEPTS[m.dept]}</td>
-      <td class="num">${att.workDays}</td><td class="num">${punchDays.size}</td>
-      <td class="num">${att.late||''}</td><td class="num">${att.early||''}</td>
-      <td class="num" style="font-weight:${att.absent?700:400}">${att.absent||''}</td>
-      <td class="num">${leaveDays||''}</td><td class="num">${otMin?(otMin/60).toFixed(1):'—'}</td></tr>`;
-  }).join('');
-  return `<div class="stack">
-    <div class="muted">月出勤彙總（${yr} 年 ${mo} 月）· 可匯出 CSV（Excel 可直接開）</div>
-    <div class="panel"><form data-form="reports" class="row" style="align-items:flex-end">
-      <div class="field" style="width:110px"><label>年</label><input type="number" name="y" value="${yr}"></div>
-      <div class="field" style="width:90px"><label>月</label><input type="number" name="m" min="1" max="12" value="${mo}"></div>
-      <button class="btn primary" type="submit">🔍 查詢</button>
-      <button type="button" class="btn" data-act="csvSummary" data-ym="${ym}">⬇ 匯出月彙總 CSV</button>
-      <button type="button" class="btn" data-act="csvDetail" data-ym="${ym}">⬇ 匯出逐日明細 CSV</button>
-    </form></div>
-    <div class="panel"><div class="tablewrap"><table>
+  const now = TODAY;
+  const y1=+q.get('y1')||+q.get('y')||now.getFullYear();
+  const m1=+q.get('m1')||+q.get('m')||(now.getMonth()+1);
+  const y2=+q.get('y2')||y1;
+  const m2=+q.get('m2')||(+q.get('m')||(now.getMonth()+1));
+  const fromYm=`${y1}-${pad(m1)}`, toYm=`${y2}-${pad(m2)}`;
+  const months = monthRange(fromYm, toYm);
+  const empSel = q.get('emp') || '';
+  const target = empSel ? emp(empSel) : null;
+  const rangeQS = `y1=${y1}&m1=${m1}&y2=${y2}&m2=${m2}`;
+  const empOptions = `<option value="">（全部員工）</option>` + EMP.map(m=>`<option value="${m.id}" ${empSel===String(m.id)?'selected':''}>${m.name}（${m.no}）</option>`).join('');
+
+  let body;
+  if (target){
+    const dow = d => '日一二三四五六'[new Date(d+'T00:00').getDay()];
+    const STN = { NORMAL:'正常',LATE:'遲到',EARLY:'早退',ABSENT:'曠職',MISSING:'缺卡',LEAVE:'請假',TRIP:'出差',WFH:'遠距',HOLIDAY:'國定假日',OFF:'例假/休息',OPEN:'出勤中',NODATA:'—' };
+    const AN = { LATE:'遲到',EARLY_LEAVE:'早退',MISSING_PUNCH:'缺卡',ABSENT:'曠職',OUTING_NO_RETURN:'外出未歸' };
+    const dayRows = [];
+    months.forEach(ym=>{
+      monthAttendance(target.id, ym).rows.forEach(r=>{
+        dayRows.push(`<tr><td class="mono">${r.date}</td><td>${dow(r.date)}</td><td>${DT_LABEL[r.dayType]||r.dayType}</td>
+          <td>${r.in}</td><td>${r.out}</td>
+          <td class="num">${(r.in!=='—'&&r.in!=='遠距'&&r.out!=='—'&&r.out!=='遠距')?hrs(r.worked):''}</td>
+          <td>${(r.outings||[]).join('；')}</td>
+          <td class="num">${r.late||''}</td><td class="num">${r.early||''}</td>
+          <td>${STN[r.status]||r.status}</td><td>${r.anomalies.map(c=>AN[c]||c).join('；')}</td></tr>`);
+      });
+    });
+    body = `<div class="panel"><div class="tablewrap"><table>
+      <thead><tr><th>日期</th><th>星期</th><th>日別</th><th>上班</th><th>下班</th><th>工時(時)</th><th>外出時段</th><th>遲到(分)</th><th>早退(分)</th><th>狀態</th><th>異常</th></tr></thead>
+      <tbody>${dayRows.join('')||'<tr><td colspan="11" class="muted" style="text-align:center;padding:22px">此區間無資料</td></tr>'}</tbody>
+    </table></div></div>`;
+  } else {
+    const rows = EMP.map(m=>{
+      let workDays=0, workedHours=0, outingHours=0, late=0, early=0, missing=0, absent=0, leaveDays=0, otMin=0;
+      const punchDays = new Set();
+      months.forEach(ym=>{
+        const a = monthAttendance(m.id, ym);
+        workDays+=a.workDays; workedHours+=a.workedHours; outingHours+=a.outingHours;
+        late+=a.late; early+=a.early; missing+=a.missing; absent+=a.absent;
+        a.rows.filter(r=>r.in&&r.in!=='—'&&r.in!=='遠距').forEach(r=>punchDays.add(ym+'|'+r.date));
+        DB.punches.filter(p=>String(p.emp)===String(m.id)&&p.ts.startsWith(ym)).forEach(p=>punchDays.add(ym+'|'+p.ts.slice(0,10)));
+        leaveDays += DB.leaves.filter(l=>String(l.emp)===String(m.id)&&l.status==='APPROVED'&&l.start.startsWith(ym)).reduce((s,l)=>s+l.days,0);
+        otMin += DB.overtime.filter(o=>String(o.emp)===String(m.id)&&o.status==='APPROVED'&&o.date.startsWith(ym)).reduce((s,o)=>s+o.hours*60,0);
+      });
+      return `<tr><td class="mono">${m.no}</td><td><a class="btn link" href="#/reports?${rangeQS}&emp=${m.id}" title="查看個人逐日明細">${m.name}</a></td><td>${DEPTS[m.dept]}</td>
+        <td class="num">${workDays}</td><td class="num">${punchDays.size}</td>
+        <td class="num">${late||''}</td><td class="num">${early||''}</td>
+        <td class="num" style="font-weight:${absent?700:400}">${absent||''}</td>
+        <td class="num">${leaveDays||''}</td><td class="num">${otMin?(otMin/60).toFixed(1):'—'}</td></tr>`;
+    }).join('');
+    body = `<div class="panel"><div class="tablewrap"><table>
       <thead><tr><th>工號</th><th>姓名</th><th>部門</th><th>應出勤</th><th>有打卡</th><th>遲到(分)</th><th>早退(分)</th><th>曠職(日)</th><th>請假(日)</th><th>加班(時)</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table></div></div>
+    </table></div></div>`;
+  }
+
+  return `<div class="stack">
+    <div class="muted">${target?`👤 ${target.name}（${target.no}）個人逐日出勤明細`:'全員出勤彙總'} · ${fromYm}${fromYm===toYm?'':' ～ '+toYm} · 可依人員／月份區間查詢並匯出 CSV，供勞檢或糾紛調閱使用</div>
+    <div class="panel"><form data-form="reports" class="row" style="align-items:flex-end;flex-wrap:wrap;gap:10px">
+      <div class="field" style="width:180px"><label>員工（單人調閱）</label><select name="emp">${empOptions}</select></div>
+      <div class="field" style="width:90px"><label>起始年</label><input type="number" name="y1" value="${y1}"></div>
+      <div class="field" style="width:80px"><label>起始月</label><input type="number" name="m1" min="1" max="12" value="${m1}"></div>
+      <div class="field" style="width:90px"><label>結束年</label><input type="number" name="y2" value="${y2}"></div>
+      <div class="field" style="width:80px"><label>結束月</label><input type="number" name="m2" min="1" max="12" value="${m2}"></div>
+      <button class="btn primary" type="submit">🔍 查詢</button>
+      <a class="btn" href="#/reports?y1=${now.getFullYear()}&m1=1&y2=${now.getFullYear()}&m2=12&emp=${empSel}">📅 今年 1–12 月整年</a>
+      <button type="button" class="btn" data-act="csvSummary" data-y1="${y1}" data-m1="${m1}" data-y2="${y2}" data-m2="${m2}" data-emp="${empSel}">⬇ 匯出彙總 CSV</button>
+      <button type="button" class="btn" data-act="csvDetail" data-y1="${y1}" data-m1="${m1}" data-y2="${y2}" data-m2="${m2}" data-emp="${empSel}">⬇ 匯出逐日明細 CSV</button>
+    </form></div>
+    ${body}
   </div>`;
 };
 
@@ -1888,24 +1965,33 @@ function cancelReq(kind, id){
 /* 打卡：盡量夾帶 GPS 座標（純瀏覽器定位 API，免費、不呼叫任何外部服務／不需金鑰）。
    使用者若拒絕定位權限、瀏覽器不支援、或 5 秒內沒有回應，一律照樣完成打卡（不因為沒有 GPS 而卡住）。 */
 function recordPunch(type, label){
-  const finish = (lat, lng, acc) => {
+  const finish = (lat, lng, acc, why) => {
     const now = new Date();
     const rec = { id:'p'+(++SEQ), emp:state.uid, type, ts:`${ymd(now)}T${pad(now.getHours())}:${pad(now.getMinutes())}` };
     if (lat!=null){ rec.lat = Math.round(lat*1e6)/1e6; rec.lng = Math.round(lng*1e6)/1e6; rec.acc = Math.round(acc||0); }
     DB.punches.push(rec);
     savePunchMonth(ymd(now).slice(0,7));
-    flash = `✅ ${label} 完成 · ${pad(now.getHours())}:${pad(now.getMinutes())}${lat!=null?'　📍已記錄地點':''}`;
+    const gpsNote = lat!=null ? '　📍已記錄地點' : `　⚠️ 未取得定位（${why}）`;
+    flash = `✅ ${label} 完成 · ${pad(now.getHours())}:${pad(now.getMinutes())}${gpsNote}`;
     render();
+  };
+  // GPS 失敗原因對照，方便診斷（例如瀏覽器/裝置未授權定位、逾時、或此頁面所在環境不允許定位權限）
+  const reasonOf = err => {
+    if (!err) return '未知原因';
+    if (err.code === 1) return '未取得定位權限';
+    if (err.code === 2) return '目前位置無法取得';
+    if (err.code === 3) return '定位逾時';
+    return err.message || '未知原因';
   };
   try {
     if (navigator.geolocation){
       navigator.geolocation.getCurrentPosition(
-        pos => finish(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy),
-        () => finish(null,null,null),                      // 使用者拒絕／定位失敗 → 照樣打卡
+        pos => finish(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy, null),
+        err => finish(null,null,null, reasonOf(err)),        // 使用者拒絕／定位失敗 → 照樣打卡，但顯示原因
         { timeout:5000, maximumAge:60000 }
       );
-    } else finish(null,null,null);
-  } catch(e){ finish(null,null,null); }
+    } else finish(null,null,null,'此瀏覽器不支援定位');
+  } catch(e){ finish(null,null,null,'定位功能被阻擋'); }
 }
 /* 刪除單筆打卡（僅管理員可刪，含員工本人的紀錄） */
 function deletePunch(id, emp2, type, ts){
@@ -2170,8 +2256,8 @@ function bind(){
         }
       }
       if (act==='cancelReq'){ cancelReq(el.dataset.kind, el.dataset.id); }
-      if (act==='csvSummary'){ downloadFile(`綠谷_月出勤彙總_${el.dataset.ym}.csv`, reportSummaryCSV(el.dataset.ym), 'text/csv'); }
-      if (act==='csvDetail'){ downloadFile(`綠谷_逐日出勤明細_${el.dataset.ym}.csv`, reportDetailCSV(el.dataset.ym), 'text/csv'); }
+      if (act==='csvSummary'){ const f=`${el.dataset.y1}-${pad(+el.dataset.m1)}`, t=`${el.dataset.y2}-${pad(+el.dataset.m2)}`; downloadFile(`綠谷_月出勤彙總_${f}_${t}.csv`, reportSummaryCSV(f,t,el.dataset.emp||null), 'text/csv'); }
+      if (act==='csvDetail'){ const f=`${el.dataset.y1}-${pad(+el.dataset.m1)}`, t=`${el.dataset.y2}-${pad(+el.dataset.m2)}`; downloadFile(`綠谷_逐日出勤明細_${f}_${t}.csv`, reportDetailCSV(f,t,el.dataset.emp||null), 'text/csv'); }
       if (act==='csvAudit'){ downloadFile(`綠谷_稽核軌跡_${ymd(TODAY)}.csv`, auditCSV(), 'text/csv'); }
       if (act==='confirmPay'){ confirmPayslip(el.dataset.e, el.dataset.ym); }
       if (act==='resetDemo'){
@@ -2209,7 +2295,7 @@ function bind(){
         else if (k==='trip') submitTrip(fd, form);
         else if (k==='staff') saveStaff(fd, (form.dataset.id!=null && form.dataset.id!=='') ? form.dataset.id : null);
         else if (k==='payroll') location.hash=`#/payroll?e=${fd.e}&y=${fd.y}&m=${fd.m}`;
-        else if (k==='reports') location.hash=`#/reports?y=${fd.y}&m=${fd.m}`;
+        else if (k==='reports') location.hash=`#/reports?y1=${fd.y1}&m1=${fd.m1}&y2=${fd.y2}&m2=${fd.m2}&emp=${fd.emp||''}`;
         else if (k==='audit') location.hash=`#/audit?kw=${encodeURIComponent(fd.kw||'')}`;
         else if (k==='adminPunch') adminAddPunch(form.dataset.emp, fd.date, fd.endDate, fd.type, fd.time);
       } catch(err){ errMsg('發生錯誤：'+(err&&err.message||err)); console.error(err); }
