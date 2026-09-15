@@ -776,7 +776,9 @@ function reportSummaryCSV(fromYm, toYm, empId){
   members.forEach(m=>{
     months.forEach(ym=>{
       const a = monthAttendance(m.id, ym);
-      const leaveDays = DB.leaves.filter(l=>String(l.emp)===String(m.id)&&l.status==='APPROVED'&&l.start.startsWith(ym)).reduce((s,l)=>s+l.days,0);
+      const rMB = monthBounds(ym);
+      const leaveDays = DB.leaves.filter(l=>String(l.emp)===String(m.id)&&l.status==='APPROVED'&&l.start<=rMB.end&&l.end>=rMB.start)
+        .reduce((s,l)=>s+leaveInMonth(l,ym).days,0);
       const otH = DB.overtime.filter(o=>String(o.emp)===String(m.id)&&o.status==='APPROVED'&&o.date.startsWith(ym)).reduce((s,o)=>s+o.hours,0);
       const punchDays = new Set(a.rows.filter(r=>r.in&&r.in!=='—'&&r.in!=='遠距').map(r=>r.date));
       DB.punches.filter(p=>String(p.emp)===String(m.id)&&p.ts.startsWith(ym)).forEach(p=>punchDays.add(p.ts.slice(0,10)));
@@ -1242,14 +1244,19 @@ V.attendance = () => {
     </table></div>
     <p class="note">工時＝出勤落在 09:00–12:00 與 13:00–18:00 兩段之時間（12:00–13:00 休息已自動扣除，外出時段亦已扣除）。遲到＝上班卡晚於 09:00；早退＝下班卡早於 18:00；應出勤日未打卡且無准假＝曠職（扣一日工資）；有上班卡缺下班卡＝缺卡（僅提醒補登，不視同曠職扣薪）；外出後未打返回卡＝外出未歸。<span class="ablock warn">⏰ 遲到</span><span class="ablock warn">🏃 早退</span><span class="ablock orange">❗ 缺卡</span><span class="ablock bad">⛔ 曠職</span><span class="ablock orange">🚪 外出未歸</span></p>
     </div>
-    ${isAdmin() ? adminPunchPanel(e) : ''}
+    ${isAdmin() ? adminPunchPanel(e, ym) : ''}
   </div>`;
 };
-/* 管理員代改他人打卡（本月） */
-function adminPunchPanel(e){
-  const months = [curMonth(), prevMonth()];
+/* 管理員代改他人打卡：只針對「目前瀏覽中的那個月」（ym），避免跟月份瀏覽的畫面對不上、
+   誤以為可以補到很久以前，也避免補到還沒到的未來日期。 */
+function adminPunchPanel(e, ym){
+  ym = ym || curMonth();
+  const mb = monthBounds(ym);
+  const todayStr = ymd(TODAY);
+  const mMax = mb.end < todayStr ? mb.end : todayStr;
+  const future = mb.start > todayStr;                      // 整個月都還沒到
   const PT = {IN:'上班簽到',OUT:'下班簽退',OUTING_OUT:'外出',OUTING_IN:'外出返回',OT_IN:'加班開始',OT_OUT:'加班結束'};
-  const list = DB.punches.filter(p=>String(p.emp)===String(e.id) && months.includes(String(p.ts).slice(0,7)))
+  const list = DB.punches.filter(p=>String(p.emp)===String(e.id) && String(p.ts).slice(0,7)===ym)
     .sort((a,b)=>String(b.ts).localeCompare(String(a.ts)));
   const rows = list.map(p=>`<tr>
     <td class="mono">${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}</td>
@@ -1258,18 +1265,19 @@ function adminPunchPanel(e){
     <td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️ 刪除</button></td>
   </tr>`).join('');
   return `<div class="panel" style="border-color:var(--warn)">
-    <h2 style="color:var(--warn)">🛠️ 打卡調整（管理員代 ${e.name} 修正）</h2>
+    <h2 style="color:var(--warn)">🛠️ 打卡調整（管理員代 ${e.name} 修正 · ${ym}）</h2>
+    ${future ? `<p class="note">⚠️ ${ym} 尚未到，無法補打卡。</p>` : `
     <form data-form="adminPunch" data-emp="${e.id}" class="row" style="align-items:flex-end">
-      <div class="field"><label>日期</label><input type="date" name="date" value="${ymd(TODAY)}" min="${prevMonth()}-01" max="${ymd(TODAY)}" required></div>
-      <div class="field"><label>結束日期（批次補登用，留空＝只補一天）</label><input type="date" name="endDate" min="${prevMonth()}-01" max="${ymd(TODAY)}"></div>
+      <div class="field"><label>日期</label><input type="date" name="date" value="${mMax}" min="${mb.start}" max="${mMax}" required></div>
+      <div class="field"><label>結束日期（批次補登用，留空＝只補一天）</label><input type="date" name="endDate" min="${mb.start}" max="${mMax}"></div>
       <div class="field"><label>類型</label><select name="type">${Object.entries(PT).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></div>
       <div class="field" style="width:120px"><label>時間</label><input type="time" name="time" value="09:00" required></div>
       <button class="btn primary" type="submit">＋ 新增打卡</button>
     </form>
-    <p class="note" style="margin-top:6px">填「結束日期」可一次補登一段期間，只會補「平日」（自動跳過週六日／國定假日），已有同類型打卡的那天會自動略過、不會重複新增。</p>
+    <p class="note" style="margin-top:6px">只能補「${ym} 這個月」的打卡；要補其他月份，請先在上方切換到那個月。填「結束日期」可一次補登一段期間，只會補「平日」（自動跳過週六日／國定假日），已有同類型打卡的那天會自動略過、不會重複新增。</p>`}
     <div class="tablewrap" style="margin-top:12px"><table>
       <thead><tr><th>日期時間</th><th>類型</th><th>地點</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="4" class="muted" style="text-align:center;padding:16px">本月尚無打卡</td></tr>'}</tbody>
+      <tbody>${rows || `<tr><td colspan="4" class="muted" style="text-align:center;padding:16px">${ym} 尚無打卡</td></tr>`}</tbody>
     </table></div>
     <p class="note">新增／刪除打卡都會寫入「稽核軌跡」。要修改某筆時間，請先刪除再新增。</p>
   </div>`;
@@ -1820,12 +1828,46 @@ V.staff = () => {
   </div>`;
 };
 
-/* ---- 月薪試算（管理員限定） ---- */
+/* ---- 月薪試算（管理員限定） ----
+   請假／出差若橫跨月份交界（例如 1/30–2/2），不能整段算在「起始月」，
+   否則起始月會多算、下個月完全漏算。以下三個 helper 把區間裁到目標月份再重算天數／時數，
+   讓 leaveHoursByPay／出差津貼在任何一個月份都只算「落在那個月」的部分。 */
+function monthBounds(ym){
+  const [y,m] = ym.split('-').map(Number);
+  return { start:`${ym}-01`, end: ymd(new Date(y, m, 0)) };
+}
+function clipRangeToMonth(fromStr, toStr, ym){
+  const { start:mS, end:mE } = monthBounds(ym);
+  const s = fromStr > mS ? fromStr : mS;
+  const e = toStr < mE ? toStr : mE;
+  return s <= e ? { start:s, end:e } : null;
+}
+/* 請假紀錄落在某月份內實際應算的天數／時數：半日／按時假本就限單日，直接看是否落在該月；
+   多日全天假則把區間裁到該月，只算裁切後範圍內的「平日」天數（跟 leaveDaysOf 送出當時的算法一致）。 */
+function leaveInMonth(l, ym){
+  if (l.byHour || l.half) return l.start.startsWith(ym) ? { days:l.days, hours:l.hours } : { days:0, hours:0 };
+  const clip = clipRangeToMonth(l.start, l.end, ym);
+  if (!clip) return { days:0, hours:0 };
+  let days=0;
+  for (let d=new Date(clip.start+'T00:00'); ymd(d)<=clip.end; d.setDate(d.getDate()+1)){
+    if (twDayType(ymd(d))==='WORKDAY') days++;
+  }
+  return { days, hours: days*8 };
+}
+/* 出差津貼依「曆日」計算（含週末）；跨月時只算落在該月的曆日數 */
+function tripDaysInMonth(t, ym){
+  const clip = clipRangeToMonth(t.start, t.end, ym);
+  if (!clip) return 0;
+  return Math.round((new Date(clip.end+'T00:00') - new Date(clip.start+'T00:00'))/86400000) + 1;
+}
 function leaveHoursByPay(empId,ym){
+  const { start:mS, end:mE } = monthBounds(ym);
   let unpaid=0,half=0,full=0;
-  DB.leaves.filter(l=>l.emp===empId&&l.status==='APPROVED'&&l.start.startsWith(ym)).forEach(l=>{
+  DB.leaves.filter(l=>l.emp===empId&&l.status==='APPROVED'&&l.start<=mE&&l.end>=mS).forEach(l=>{
     const t=LT(l.type);
-    if(t.paid===0) unpaid+=l.hours; else if(t.paid===0.5) half+=l.hours; else full+=l.hours;
+    const { hours } = leaveInMonth(l, ym);
+    if (hours<=0) return;
+    if(t.paid===0) unpaid+=hours; else if(t.paid===0.5) half+=hours; else full+=hours;
   });
   return {unpaid,half,full};
 }
@@ -1838,9 +1880,10 @@ V.payroll = () => {
   const wb = wageBaseMonthly(e);
   const otPay=DB.overtime.filter(o=>String(o.emp)===String(eid)&&o.status==='APPROVED'&&o.comp==='PAY'&&o.date.startsWith(ym))
     .reduce((s,o)=>s + overtimePay(o.wageBase||wb, o.hours, o.dayType), 0);
-  const mTrips=DB.trips.filter(t=>String(t.emp)===String(eid)&&t.status==='APPROVED'&&t.start.startsWith(ym));
-  const perDiem=mTrips.reduce((s,t)=>s+(t.perDiem||0),0);
-  const perDiemDays=mTrips.reduce((s,t)=>s+(t.days||0),0);
+  const payMB = monthBounds(ym);
+  const mTrips=DB.trips.filter(t=>String(t.emp)===String(eid)&&t.status==='APPROVED'&&t.start<=payMB.end&&t.end>=payMB.start);
+  const perDiemDays=mTrips.reduce((s,t)=>s+tripDaysInMonth(t,ym),0);
+  const perDiem=mTrips.reduce((s,t)=>s+tripDaysInMonth(t,ym)*(t.pdRate||0),0);
 
   // 當月在職曆日數（到職／離職落在月中 → 比例計薪）
   const dim = new Date(yr, mo, 0).getDate();                 // 當月天數
@@ -1926,7 +1969,8 @@ function confirmPayslip(eid, ym){
   const [yr, mo] = ym.split('-').map(Number);
   const att=monthAttendance(eid,ym), lh=leaveHoursByPay(eid,ym), wb=wageBaseMonthly(e);
   const otPay=DB.overtime.filter(o=>String(o.emp)===String(eid)&&o.status==='APPROVED'&&o.comp==='PAY'&&o.date.startsWith(ym)).reduce((s,o)=>s+overtimePay(o.wageBase||wb,o.hours,o.dayType),0);
-  const mTrips=DB.trips.filter(t=>String(t.emp)===String(eid)&&t.status==='APPROVED'&&t.start.startsWith(ym));
+  const confMB = monthBounds(ym);
+  const mTrips=DB.trips.filter(t=>String(t.emp)===String(eid)&&t.status==='APPROVED'&&t.start<=confMB.end&&t.end>=confMB.start);
   const dim=new Date(yr,mo,0).getDate();
   const mStart=new Date(yr,mo-1,1), mEnd=new Date(yr,mo-1,dim);
   const hireD=new Date(e.hire+'T00:00:00'), leaveD=e.leaveDate?new Date(e.leaveDate+'T00:00:00'):null;
@@ -1937,7 +1981,7 @@ function confirmPayslip(eid, ym){
   const r=computePayroll({ monthlySalary:e.salary, wageBase:wb, meal:e.meal, mgrAllow:e.mgrAllow, otherAllow:e.otherAllow,
     daysInMonth:dim, employedDays:ed, lateMin:att.late, earlyMin:att.early, absentDays:att.absent,
     unpaidHours:lh.unpaid, halfHours:lh.half, overtimePay:otPay,
-    perDiem:mTrips.reduce((s,t)=>s+(t.perDiem||0),0), perDiemDays:mTrips.reduce((s,t)=>s+(t.days||0),0), pdRate:perDiemRate(e.role),
+    perDiem:mTrips.reduce((s,t)=>s+tripDaysInMonth(t,ym)*(t.pdRate||0),0), perDiemDays:mTrips.reduce((s,t)=>s+tripDaysInMonth(t,ym),0), pdRate:perDiemRate(e.role),
     laborSelf:e.laborSelf, healthSelf: healthActive ? e.healthSelf : 0 });
   const idx = DB.payslips.findIndex(p=>String(p.emp)===String(e.id) && p.ym===ym);
   // 補休逾 6 個月未休（§32-1）：只有第一次確認才結算＋標記 compPaidOut；重新確認時延用當初金額
@@ -2098,7 +2142,7 @@ V.reports = () => {
         late+=a.late; early+=a.early; missing+=a.missing; absent+=a.absent;
         a.rows.filter(r=>r.in&&r.in!=='—'&&r.in!=='遠距').forEach(r=>punchDays.add(ym+'|'+r.date));
         DB.punches.filter(p=>String(p.emp)===String(m.id)&&p.ts.startsWith(ym)).forEach(p=>punchDays.add(ym+'|'+p.ts.slice(0,10)));
-        leaveDays += DB.leaves.filter(l=>String(l.emp)===String(m.id)&&l.status==='APPROVED'&&l.start.startsWith(ym)).reduce((s,l)=>s+l.days,0);
+        leaveDays += (() => { const rMB2=monthBounds(ym); return DB.leaves.filter(l=>String(l.emp)===String(m.id)&&l.status==='APPROVED'&&l.start<=rMB2.end&&l.end>=rMB2.start).reduce((s,l)=>s+leaveInMonth(l,ym).days,0); })();
         otMin += DB.overtime.filter(o=>String(o.emp)===String(m.id)&&o.status==='APPROVED'&&o.date.startsWith(ym)).reduce((s,o)=>s+o.hours*60,0);
       });
       return `<tr><td class="mono">${m.no}</td><td><a class="btn link" href="#/reports?${rangeQS}&emp=${m.id}" title="查看個人逐日明細">${m.name}</a></td><td>${DEPTS[m.dept]}</td>
