@@ -17,6 +17,7 @@
     --focus:#3E8266;
     --shadow:0 1px 2px rgba(20,40,32,.06), 0 4px 16px -8px rgba(20,40,32,.10);
     --morandi-1:#E8DAD6; --morandi-2:#DCE3D6; --morandi-3:#D8E0E3; --morandi-4:#EAE2D6;
+    --morandi-ink:#3F5449;
     --wine:#7A2E3A;
     color-scheme: light;
   }
@@ -34,6 +35,7 @@
       --focus:#6FA88F;
       --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px -10px rgba(0,0,0,.5);
       --morandi-1:#3A2E2C; --morandi-2:#2A3128; --morandi-3:#273239; --morandi-4:#39331F;
+      --morandi-ink:#8FB09C;
       --wine:#D98FA0;
       color-scheme: dark;
     }
@@ -51,6 +53,7 @@
     --focus:#6FA88F;
     --shadow:0 1px 2px rgba(0,0,0,.3), 0 6px 20px -10px rgba(0,0,0,.5);
     --morandi-1:#3A2E2C; --morandi-2:#2A3128; --morandi-3:#273239; --morandi-4:#39331F;
+    --morandi-ink:#8FB09C;
     --wine:#D98FA0;
     color-scheme: dark;
   }
@@ -296,7 +299,7 @@ function nextAnnualGrant(hire,asOf){
 }
 
 /* ---------- 加班費（§24）／上限（§32） ----------
-   平日每小時工資額 = 月工資 ÷ 240（月工資＝本薪＋按月固定發給之工資性津貼；膳食津貼不列入）。 */
+   平日每小時工資額 = 月工資 ÷ 240（月工資＝本薪＋主管津貼＋其他津貼＋伙食津貼，依公司規定伙食津貼併入計算）。 */
 function wageBaseMonthly(e){ return (+e.salary||0) + (+e.mgrAllow||0) + (+e.otherAllow||0) + (+e.meal||0); }
 const hourlyOf = m => m/240;
 
@@ -897,9 +900,11 @@ function dashboardTips(e){
     const days = Math.ceil((new Date(t.start+'T00:00') - TODAY)/86400000);
     if (days>=0 && days<=3) tips.push({ icon:'✈️', text:`你有出差將於 ${fmtD(t.start)} 出發（${esc(t.dest||'')}），記得提前準備喔。`, href:'#/trip' });
   });
+  // 只對「員工管理已存過人事卡資料」的人做提醒（e.onboardDocs 欄位存在）：
+  // 舊員工從未用過這個清單功能，onboardDocs 是 undefined，不能當成「全部沒交」而誤發警示。
   const daysSinceHire = Math.floor((TODAY - new Date(e.hire+'T00:00'))/86400000);
-  if (daysSinceHire >= ONBOARD_GRACE_DAYS){
-    const missing = ONBOARD_DOCS.filter(d=>!(e.onboardDocs && e.onboardDocs[d.code]));
+  if (daysSinceHire >= ONBOARD_GRACE_DAYS && e.onboardDocs){
+    const missing = ONBOARD_DOCS.filter(d=>!e.onboardDocs[d.code]);
     if (missing.length) tips.push({ icon:'📎', text:`你尚有到職文件未繳齊：${missing.map(d=>d.name).join('、')}，請盡快掃描發送給管理部喔。` });
   }
   return tips;
@@ -982,10 +987,10 @@ V.dashboard = () => {
     <h2 style="font-size:17px">🏠 嗨，${e.name}
       <span class="muted" style="font-family:'Noto Sans TC';font-size:13px;font-weight:400">　${fmtD(TODAY)}（${dow}）· ${DEPTS[e.dept]} · 台北正常班 09:00–18:00</span></h2>
     <div class="tiles">
-      <div class="tile" style="background:var(--morandi-1);border-color:transparent"><div class="k">🕘 今日上班</div><div class="v" style="color:var(--ink-soft)">${inP?fmtT(inP.ts):'--:--'}</div><div class="hint">${inP?'已簽到':'尚未簽到'}</div></div>
-      <div class="tile" style="background:var(--morandi-2);border-color:transparent"><div class="k">🕕 今日下班</div><div class="v" style="color:var(--ink-soft)">${outP?fmtT(outP.ts):'--:--'}</div><div class="hint">${outP?'已簽退':'尚未簽退'}</div></div>
-      <div class="tile" style="background:var(--morandi-3);border-color:transparent"><div class="k">🏝️ 特休剩餘</div><div class="v" style="color:var(--ink-soft)">${per.granted-used-pend}</div><div class="hint">給假 ${per.granted} 日 · ${fmtD(per.end)} 到期</div></div>
-      <div class="tile" style="background:var(--morandi-4);border-color:transparent"><div class="k">${approver?'✅ 待我簽核':'📤 我送出待簽'}</div><div class="v" style="color:var(--ink-soft)">${approver?myApprovals:DB.leaves.filter(l=>l.emp===e.id&&l.status==='PENDING').length}</div><div class="hint">${approver?'前往簽核中心':'等待主管簽核'}</div></div>
+      <div class="tile" style="background:var(--morandi-1);border-color:transparent"><div class="k">🕘 今日上班</div><div class="v" style="color:var(--morandi-ink)">${inP?fmtT(inP.ts):'--:--'}</div><div class="hint">${inP?'已簽到':'尚未簽到'}</div></div>
+      <div class="tile" style="background:var(--morandi-2);border-color:transparent"><div class="k">🕕 今日下班</div><div class="v" style="color:var(--morandi-ink)">${outP?fmtT(outP.ts):'--:--'}</div><div class="hint">${outP?'已簽退':'尚未簽退'}</div></div>
+      <div class="tile" style="background:var(--morandi-3);border-color:transparent"><div class="k">🏝️ 特休剩餘</div><div class="v" style="color:var(--morandi-ink)">${per.granted-used-pend}</div><div class="hint">給假 ${per.granted} 日 · ${fmtD(per.end)} 到期</div></div>
+      <div class="tile" style="background:var(--morandi-4);border-color:transparent"><div class="k">${approver?'✅ 待我簽核':'📤 我送出待簽'}</div><div class="v" style="color:var(--morandi-ink)">${approver?myApprovals:DB.leaves.filter(l=>l.emp===e.id&&l.status==='PENDING').length}</div><div class="hint">${approver?'前往簽核中心':'等待主管簽核'}</div></div>
     </div>
     <div class="panel"><h2>⚡ 快速操作</h2><div class="row">
       <a class="btn primary" href="#/punch">🕘 上／下班打卡</a>
