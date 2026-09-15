@@ -1263,7 +1263,7 @@ V.leave = () => {
         const t=LT(l.type);
         const done=l.steps.filter(s=>s.st==='APPROVED').length;
         const prog=l.steps.map(s=>`${(emp(s.by)||{name:'?'}).name}${s.st==='APPROVED'?'✓':s.st==='REJECTED'?'✗':s.st==='CANCELLED'?'⊘':'…'}`).join(' → ');
-        const qty = l.byHour ? `${l.hours} 小時` : (l.days===0.5 ? '半日' : `${l.days} 日`);
+        const qty = l.byHour ? `${l.hours} 小時${l.hourStart?`<div class="subnote">${l.hourStart}–${l.hourEnd}</div>`:''}` : (l.days===0.5 ? '半日' : `${l.days} 日`);
         return `<tr><td>${t.name}</td><td class="mono">${fmtD(l.start).slice(5)}${l.start!==l.end?'–'+fmtD(l.end).slice(5):''}</td><td class="num">${qty}</td>
           <td>${paidLabel(t.paid)}</td><td>${l.attach?(l.attachUrl?`<a class="badge good" href="${esc(l.attachUrl)}" target="_blank" rel="noopener">📎 ${esc(l.attach)}</a>`:`<span class="badge good">📎 ${esc(l.attach)}</span>`):(t.attach==='REQUIRED'?'<span class="badge bad">缺附件</span>':'<span class="muted">—</span>')}</td>
           <td class="chain">${l.steps.length?`${done}/${l.steps.length}｜${prog}`:'—'}</td>
@@ -1299,7 +1299,9 @@ V['leave/new'] = () => {
           <div class="field"><label>開始日期</label><input type="date" name="start" value="${rec?rec.start:ymd(TODAY)}" required></div>
           <div class="field"><label>結束日期</label><input type="date" name="end" value="${rec?rec.end:ymd(TODAY)}" required></div>
           <div class="field"><label>時段（同日適用）</label><select name="period" data-act="leavePeriod">${pOpt('FULL','全天（8 小時）')}${pOpt('AM','上午半天（4 小時）')}${pOpt('PM','下午半天（4 小時）')}${pOpt('HOURS','指定時數（小時）')}</select></div>
-          <div class="field" id="hoursWrap" ${recPeriod==='HOURS'?'':'hidden'}><label>請假時數（小時，0.25 為單位）</label><input type="number" name="hoursInput" min="0.25" max="8" step="0.25" value="${rec&&rec.byHour?rec.hours:2}"></div>
+          <div class="field" id="hoursWrap" ${recPeriod==='HOURS'?'':'hidden'}><label>開始時間</label><input type="time" name="hourStart" data-act="hourTime" value="${rec&&rec.byHour&&rec.hourStart?rec.hourStart:'09:00'}"></div>
+          <div class="field" id="hoursWrap2" ${recPeriod==='HOURS'?'':'hidden'}><label>結束時間</label><input type="time" name="hourEnd" data-act="hourTime" value="${rec&&rec.byHour&&rec.hourEnd?rec.hourEnd:'11:00'}">
+            <span class="subnote" id="hoursPreview">實際請假時數：${rec&&rec.byHour?rec.hours:2} 小時（中午 12:00–13:00 休息不計工時）</span></div>
           <div class="field" style="grid-column:1/-1"><label>事由</label><input name="reason" value="${rec?esc(rec.reason||''):''}" placeholder="請簡述事由"></div>
           <div class="field"><label>代理人</label><select name="agent"><option value="">（無）</option>${co}</select></div>
           <div class="field"><label>檢附證明文件${rec&&rec.attach?`（現有：${esc(rec.attach)}，留空沿用）`:''}</label><input type="file" name="file" accept="image/*,application/pdf"><span class="subnote">支援圖片／PDF；上傳後簽核人可點開檢視</span></div>
@@ -1482,7 +1484,7 @@ V.approvals = () => {
   const pend = pendingApprovalsFor(me().id);
   const desc = ({kind,x})=>{
     if(kind==='LEAVE'){ const t=LT(x.type);
-      const qty = x.byHour ? `${x.hours} 小時` : (x.days===0.5 ? '半日' : `${x.days} 日`);
+      const qty = x.byHour ? `${x.hours} 小時${x.hourStart?`（${x.hourStart}–${x.hourEnd}）`:''}` : (x.days===0.5 ? '半日' : `${x.days} 日`);
       return {who:emp(x.emp).name,title:'📝 請假單：'+t.name,lines:[
         `期間 ${fmtD(x.start)}${x.start!==x.end?'–'+fmtD(x.end):''}　${qty}`,`工資 ${paidLabel(t.paid)}`,
         x.reason?`事由：${x.reason}`:''],
@@ -2011,10 +2013,22 @@ function deletePunch(id, emp2, type, ts){
   render();
 }
 
+/* 依「開始時間～結束時間」（同日）換算實際請假時數：夾在 09:00–18:00 之間，且中午 12:00–13:00 休息不計工時，
+   跟正常上班的工時算法一致（例如 11:00–13:00 只算 1 小時，不是 2 小時）。 */
+function netLeaveHours(startHHMM, endHHMM){
+  const toMin = t => { const [h,mi] = String(t||'').split(':').map(Number); return (h||0)*60+(mi||0); };
+  const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
+  const WORK_S=9*60, WORK_E=18*60, LUNCH_S=12*60, LUNCH_E=13*60;
+  const s = clamp(toMin(startHHMM), WORK_S, WORK_E);
+  const e = clamp(toMin(endHHMM), WORK_S, WORK_E);
+  if (e<=s) return 0;
+  const overlap = Math.max(0, Math.min(e,LUNCH_E) - Math.max(s,LUNCH_S));
+  return Math.round(((e-s-overlap)/60)*4)/4;   // 以 0.25 小時（15 分）為單位
+}
 function leaveDaysOf(fd){
   if (fd.start===fd.end && fd.period==='HOURS'){
-    const h = Math.round((+fd.hoursInput||0)*4)/4;        // 以 0.25 小時（15 分）為單位
-    return { days: Math.round(h/8*1000)/1000, hours:h, byHour:true };
+    const h = netLeaveHours(fd.hourStart, fd.hourEnd);
+    return { days: Math.round(h/8*1000)/1000, hours:h, byHour:true, hourStart:fd.hourStart, hourEnd:fd.hourEnd };
   }
   if (fd.start===fd.end && (fd.period==='AM'||fd.period==='PM')) return { days:0.5, hours:4, half:fd.period };
   const d1=new Date(fd.start), d2=new Date(fd.end); let days=0;
@@ -2043,10 +2057,10 @@ function submitLeave(fd, form, fileMeta){
   if (fd.period==='HOURS'){
     if (!canHourly(t.code)) return errMsg(`「${t.name}」不得以小時為單位，請改選「全天」或「上午／下午（半天）」`);
     if (fd.start!==fd.end) return errMsg('以小時請假時，開始與結束日期須為同一天');
-    if (!(+fd.hoursInput>0)) return errMsg('請填寫請假時數（0.25～8 小時）');
-    if (+fd.hoursInput>8) return errMsg('單日以小時請假不得超過 8 小時，整天請改選「全天」');
+    if (!fd.hourStart || !fd.hourEnd) return errMsg('請填寫開始時間與結束時間');
+    if (netLeaveHours(fd.hourStart, fd.hourEnd) <= 0) return errMsg('結束時間須晚於開始時間，且需落在上班時段（09:00–18:00，扣除中午 12:00–13:00 休息）內');
   }
-  const { days, hours, byHour, half } = leaveDaysOf(fd);
+  const { days, hours, byHour, half, hourStart, hourEnd } = leaveDaysOf(fd);
   if (days===0) return errMsg('所選期間內沒有應出勤日（已排除週末與國定假日）');
   if (t.attach==='REQUIRED' && !fileName && !(editId && findMyReq('leave',editId)?.attach)) return errMsg(`「${t.name}」必須檢附：${t.doc}`);
   if (t.attach==='CONDITIONAL' && days>3 && !fileName) return errMsg(`「${t.name}」逾 3 日必須檢附：${t.doc}`);
@@ -2070,11 +2084,13 @@ function submitLeave(fd, form, fileMeta){
     const rec = findMyReq('leave', editId);
     if (!editableReq(rec)) return errMsg('此申請已進入簽核流程，無法修改，請先「取消」再重新申請');
     Object.assign(rec, { type:t.code, start:fd.start, end:fd.end, days, hours, byHour:!!byHour, half:half||null,
+      hourStart: hourStart||null, hourEnd: hourEnd||null,
       reason:fd.reason, attach: fileName || rec.attach, attachUrl: fileUrl || rec.attachUrl || null,
       steps: resolveSteps(e, t.hrReview) });
     saveAll(); flash='✏️ 已更新請假申請（簽核關卡已重置）'; goHash('#/leave'); return;
   }
   DB.leaves.push({ id:++SEQ, emp:e.id, type:t.code, start:fd.start, end:fd.end, days, hours, byHour:!!byHour, half:half||null,
+    hourStart: hourStart||null, hourEnd: hourEnd||null,
     reason:fd.reason, attach:fileName, attachUrl:fileUrl, status:'PENDING', steps:resolveSteps(e, t.hrReview) });
   saveAll();
   flash='📝 請假申請已送出，已送交簽核'; goHash('#/leave');
@@ -2230,8 +2246,16 @@ function bind(){
       el.onchange=upd; upd(); return;
     }
     if (act==='leavePeriod'){
-      const upd=()=>{ const hw=document.getElementById('hoursWrap'); if(hw) hw.hidden = el.value!=='HOURS'; };
+      const upd=()=>{ const isH = el.value==='HOURS';
+        const hw=document.getElementById('hoursWrap'); if(hw) hw.hidden = !isH;
+        const hw2=document.getElementById('hoursWrap2'); if(hw2) hw2.hidden = !isH; };
       el.onchange=upd; upd(); return;
+    }
+    if (act==='hourTime'){
+      const upd=()=>{ const f=el.form, p=document.getElementById('hoursPreview'); if(!f||!p) return;
+        const h = netLeaveHours(f.hourStart.value, f.hourEnd.value);
+        p.textContent = h>0 ? `實際請假時數：${h} 小時（中午 12:00–13:00 休息不計工時）` : '⚠️ 結束時間須晚於開始時間，且需落在上班時段（09:00–18:00）內'; };
+      el.onchange=upd; el.oninput=upd; return;
     }
     if (act==='otDate'){
       const upd=()=>{ const h=document.getElementById('otHint'); if(h){ const dt=twDayType(el.value);
