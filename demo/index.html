@@ -234,6 +234,8 @@ function refreshToday(){
 const curMonth = () => ymd(TODAY).slice(0,7);   // 例：2026-09
 const fmtD = s => { const d=new Date(s); return `${d.getFullYear()}/${pad(d.getMonth()+1)}/${pad(d.getDate())}`; };
 const fmtT = s => { const d=new Date(s); return `${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+/* 打卡當下的 GPS 座標（若瀏覽器有取得並允許）→ 一個純連結，點開用 Google 地圖看位置；不含任何金鑰、不呼叫外部 API */
+const gpsLink = p => (p && p.lat!=null) ? `<a href="https://www.google.com/maps?q=${p.lat},${p.lng}" target="_blank" rel="noopener" title="準確度約 ${Math.round(p.acc||0)} 公尺">📍 查看</a>` : '<span class="muted">—</span>';
 const money = n => 'NT$ ' + Math.round(n).toLocaleString('en-US');
 const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -274,7 +276,7 @@ function nextAnnualGrant(hire,asOf){
 
 /* ---------- 加班費（§24）／上限（§32） ----------
    平日每小時工資額 = 月工資 ÷ 240（月工資＝本薪＋按月固定發給之工資性津貼；膳食津貼不列入）。 */
-function wageBaseMonthly(e){ return (+e.salary||0) + (+e.mgrAllow||0) + (+e.otherAllow||0); }
+function wageBaseMonthly(e){ return (+e.salary||0) + (+e.mgrAllow||0) + (+e.otherAllow||0) + (+e.meal||0); }
 const hourlyOf = m => m/240;
 
 /* §24Ⅰ 平日延長工時：前 2 小時 ×1⅓、第 3 小時起 ×1⅔ */
@@ -940,19 +942,19 @@ V.punch = () => {
       <div class="formgrid" style="margin-top:12px">${main.map(mkBtn).join('')}</div>
       <div class="subnote" style="margin:16px 0 8px;font-weight:700;color:var(--ink-soft)">其他打卡（外出／加班起訖）</div>
       <div class="formgrid">${more.map(mkBtn).join('')}</div>
-      <p class="note">外出簽到／簽退會記錄在下方「今日打卡紀錄」，並在「我的考勤」逐日明細中列出外出時段、自動從當日工時扣除。打卡時記錄 GPS 位置與 IP（正式版加辦公室 GPS 圍籬與 IP 白名單）。</p>
+      <p class="note">外出簽到／簽退會記錄在下方「今日打卡紀錄」，並在「我的考勤」逐日明細中列出外出時段、自動從當日工時扣除。打卡時若允許定位權限會一併記錄 GPS 座標（有 📍 圖示可點開查看地點）。</p>
     </div>
     <div class="grid2">
       <div class="panel"><h2>📋 今日打卡紀錄</h2><div class="tablewrap"><table>
-        <thead><tr><th>時間</th><th>類型</th><th>來源</th><th></th></tr></thead><tbody>
-        ${today.length?today.map(p=>`<tr><td class="mono">${fmtT(p.ts)}</td><td>${T[p.type]}</td><td class="muted">WEB</td><td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️ 刪除</button></td></tr>`).join(''):'<tr><td colspan="4" class="muted" style="text-align:center;padding:22px">今日尚無打卡</td></tr>'}
+        <thead><tr><th>時間</th><th>類型</th><th>地點</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
+        ${today.length?today.map(p=>`<tr><td class="mono">${fmtT(p.ts)}</td><td>${T[p.type]}</td><td>${gpsLink(p)}</td>${isAdmin()?`<td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️ 刪除</button></td>`:''}</tr>`).join(''):`<tr><td colspan="${isAdmin()?4:3}" class="muted" style="text-align:center;padding:22px">今日尚無打卡</td></tr>`}
         </tbody></table></div></div>
       <div class="panel"><h2>🗓️ 近期打卡</h2><div class="tablewrap"><table>
-        <thead><tr><th>日期時間</th><th>類型</th><th></th></tr></thead><tbody>
-        ${recent.map(p=>`<tr><td class="mono">${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}</td><td>${T[p.type]}</td><td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️</button></td></tr>`).join('')||'<tr><td colspan="3" class="muted" style="text-align:center;padding:22px">—</td></tr>'}
+        <thead><tr><th>日期時間</th><th>類型</th><th>地點</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
+        ${recent.map(p=>`<tr><td class="mono">${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}</td><td>${T[p.type]}</td><td>${gpsLink(p)}</td>${isAdmin()?`<td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️</button></td>`:''}</tr>`).join('')||`<tr><td colspan="${isAdmin()?4:3}" class="muted" style="text-align:center;padding:22px">—</td></tr>`}
         </tbody></table></div></div>
     </div>
-    <p class="note">誤打卡可按「🗑️ 刪除」移除該筆；管理員可於「員工管理」等處協助修正。</p>
+    <p class="note">${isAdmin()?'誤打卡可按「🗑️ 刪除」移除該筆；':''}打卡紀錄僅管理員可刪除／調整，本人如發現錯誤請告知管理員協助處理。</p>
   </div>`;
 };
 
@@ -1120,6 +1122,7 @@ function adminPunchPanel(e){
   const rows = list.map(p=>`<tr>
     <td class="mono">${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}</td>
     <td>${PT[p.type]||p.type}${p.editedBy?`<span class="subnote"> · 已由管理員調整</span>`:''}</td>
+    <td>${gpsLink(p)}</td>
     <td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️ 刪除</button></td>
   </tr>`).join('');
   return `<div class="panel" style="border-color:var(--warn)">
@@ -1133,8 +1136,8 @@ function adminPunchPanel(e){
     </form>
     <p class="note" style="margin-top:6px">填「結束日期」可一次補登一段期間，只會補「平日」（自動跳過週六日／國定假日），已有同類型打卡的那天會自動略過、不會重複新增。</p>
     <div class="tablewrap" style="margin-top:12px"><table>
-      <thead><tr><th>日期時間</th><th>類型</th><th></th></tr></thead>
-      <tbody>${rows || '<tr><td colspan="3" class="muted" style="text-align:center;padding:16px">本月尚無打卡</td></tr>'}</tbody>
+      <thead><tr><th>日期時間</th><th>類型</th><th>地點</th><th></th></tr></thead>
+      <tbody>${rows || '<tr><td colspan="4" class="muted" style="text-align:center;padding:16px">本月尚無打卡</td></tr>'}</tbody>
     </table></div>
     <p class="note">新增／刪除打卡都會寫入「稽核軌跡」。要修改某筆時間，請先刪除再新增。</p>
   </div>`;
@@ -1638,7 +1641,7 @@ V.payroll = () => {
   const slip = DB.payslips.find(p=>String(p.emp)===String(eid) && p.ym===ym);
   const mySlips = DB.payslips.filter(p=>String(p.emp)===String(eid)).slice().sort((a,b)=>b.ym.localeCompare(a.ym));
   return `<div class="stack">
-    <div class="muted">依當月出勤、請假、加班自動計算應發／應扣。綠谷不設全勤獎金；伙食／主管／其他津貼固定發給。<b>日薪一律 ＝ 月薪 ÷ 30</b>；到職或離職落在月中，本薪、固定津貼、勞保自付按「月額 ÷ 30 × 在職曆日數」計，<b>健保自付當月在職即收整月（不按日）</b>。<b>請假、遲到早退、加班費之基準＝月工資（本薪 NT$${(e.salary).toLocaleString('en-US')} ＋ 主管津貼 ${e.mgrAllow||0} ＋ 其他津貼 ${e.otherAllow||0}＝NT$${wb.toLocaleString('en-US')}）÷ 240</b>；伙食津貼屬膳食補助不列入。遲到早退僅按未提供勞務時間比例扣發，未另立罰款。</div>
+    <div class="muted">依當月出勤、請假、加班自動計算應發／應扣。綠谷不設全勤獎金；伙食／主管／其他津貼固定發給。<b>日薪一律 ＝ 月薪 ÷ 30</b>；到職或離職落在月中，本薪、固定津貼、勞保自付按「月額 ÷ 30 × 在職曆日數」計，<b>健保自付當月在職即收整月（不按日）</b>。<b>請假、遲到早退、加班費之基準＝月工資基準 NT$${wb.toLocaleString('en-US')} ÷ 240</b>。遲到早退僅按未提供勞務時間比例扣發，未另立罰款。</div>
     <div class="panel"><form data-form="payroll" class="row" style="align-items:flex-end">
       <div class="field"><label>員工</label><select name="e" data-act="payrollEmp">${opts}</select></div>
       <div class="field" style="width:110px"><label>年</label><input type="number" name="y" value="${yr}"></div>
@@ -1647,7 +1650,7 @@ V.payroll = () => {
     </form></div>
     ${r.partial ? `<div class="callout">📅 <b>${e.name}</b> 到職日 ${fmtD(e.hire)}${e.leaveDate?`、離職日 ${fmtD(e.leaveDate)}`:''} —— ${yr} 年 ${mo} 月屬<b>部分在職 ${r.employedDays} 日</b>：本薪、固定津貼、勞保＋就保按「月額 ÷ 30 × ${r.employedDays} 日」；健保${healthActive?'月底仍在保 → 收整月':'月中離職、月底已退保 → 當月不收'}。</div>` : ''}
     <div class="tiles">
-      <div class="tile"><div class="k">💵 月工資基準</div><div class="v">${money(wb).replace('NT$ ','')}</div><div class="hint">本薪＋主管＋其他津貼 · 每小時 ${money(r.hourly)} · 每日 ${money(r.daily)}</div></div>
+      <div class="tile"><div class="k">💵 月工資基準</div><div class="v">${money(wb).replace('NT$ ','')}</div><div class="hint">每小時 ${money(r.hourly)} · 每日 ${money(r.daily)}</div></div>
       <div class="tile"><div class="k">📆 當月在職天數</div><div class="v">${r.employedDays}<span style="font-size:12px"> 日</span></div><div class="hint">${r.partial?`本薪／津貼／勞保 × ${r.employedDays}÷30 ＝ ${(r.employedDays/30*100).toFixed(1)}%`:'整月在職，全額'}</div></div>
       <div class="tile"><div class="k">⏰ 當月遲到／早退</div><div class="v">${att.late} / ${att.early}<span style="font-size:12px"> 分</span></div><div class="hint">曠職 ${att.absent} 日</div></div>
       <div class="tile"><div class="k">💰 實發金額</div><div class="v">${money(r.net)}</div><div class="hint">${yr} 年 ${mo} 月</div></div>
@@ -1681,7 +1684,7 @@ V.payroll = () => {
       <thead><tr><th>月份</th><th>應發</th><th>應扣</th><th>實發</th><th>確認時間</th><th></th></tr></thead>
       <tbody>${mySlips.map(p=>`<tr><td class="mono">${p.ym}</td><td class="num">${money(p.gross)}</td><td class="num">− ${money(p.totDed)}</td><td class="num" style="font-weight:700">${money(p.net)}</td><td class="muted">${fmtD(p.confirmedAt)}</td><td><a class="btn link" href="#/payslip?e=${p.emp}&ym=${p.ym}">檢視</a></td></tr>`).join('')}</tbody>
     </table></div></div>` : ''}
-    <p class="note">加班費：取已核准且「補償方式＝加班費」者，依各單日別（平日／休息日／國定假日）之 §24／§39 分段加成，以「當時月工資基準 ÷ 240」重新計算後加總；補休不列入。勞健保自付額於員工管理依「本薪＋各項津貼」對應 2026 投保級距自動帶入（健保含眷屬人數），可手動微調；勞保＋就保按在職日比例（月額÷30×在職日），健保依月底在保狀態按月計收、不按日。</p>
+    <p class="note">加班費：取已核准且「補償方式＝加班費」者，依各單日別（平日／休息日／國定假日）之 §24／§39 分段加成，以「當時月工資基準 ÷ 240」重新計算後加總；補休不列入。勞健保自付額於員工管理輸入薪資資料時，依 2026 投保級距自動帶入（健保含眷屬人數），可手動微調；勞保＋就保按在職日比例（月額÷30×在職日），健保依月底在保狀態按月計收、不按日。</p>
   </div>`;
 };
 
@@ -1882,19 +1885,42 @@ function cancelReq(kind, id){
   pushAudit('取消申請', `${(me()||{name:'?'}).name} 的${K}單`, `原狀態 ${was}`);
   saveAll(); flash='已取消申請'; render();
 }
-/* 刪除單筆打卡（管理員可刪任何人；一般同仁僅可刪自己的） */
+/* 打卡：盡量夾帶 GPS 座標（純瀏覽器定位 API，免費、不呼叫任何外部服務／不需金鑰）。
+   使用者若拒絕定位權限、瀏覽器不支援、或 5 秒內沒有回應，一律照樣完成打卡（不因為沒有 GPS 而卡住）。 */
+function recordPunch(type, label){
+  const finish = (lat, lng, acc) => {
+    const now = new Date();
+    const rec = { id:'p'+(++SEQ), emp:state.uid, type, ts:`${ymd(now)}T${pad(now.getHours())}:${pad(now.getMinutes())}` };
+    if (lat!=null){ rec.lat = Math.round(lat*1e6)/1e6; rec.lng = Math.round(lng*1e6)/1e6; rec.acc = Math.round(acc||0); }
+    DB.punches.push(rec);
+    savePunchMonth(ymd(now).slice(0,7));
+    flash = `✅ ${label} 完成 · ${pad(now.getHours())}:${pad(now.getMinutes())}${lat!=null?'　📍已記錄地點':''}`;
+    render();
+  };
+  try {
+    if (navigator.geolocation){
+      navigator.geolocation.getCurrentPosition(
+        pos => finish(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy),
+        () => finish(null,null,null),                      // 使用者拒絕／定位失敗 → 照樣打卡
+        { timeout:5000, maximumAge:60000 }
+      );
+    } else finish(null,null,null);
+  } catch(e){ finish(null,null,null); }
+}
+/* 刪除單筆打卡（僅管理員可刪，含員工本人的紀錄） */
 function deletePunch(id, emp2, type, ts){
   const i = DB.punches.findIndex(p =>
     (id && String(p.id)===String(id)) ||
     (!id && String(p.emp)===String(emp2) && p.type===type && p.ts===ts));
   if (i < 0){ flash='⚠️ 找不到該筆打卡（可能已刪除）'; render(); return; }
   const p = DB.punches[i];
-  if (!isAdmin() && String(p.emp)!==String(state.uid)){ flash='🔒 你只能刪除自己的打卡'; render(); return; }
+  // 打卡紀錄僅管理員可刪除（含員工本人的紀錄）：避免任何人自行刪掉對自己不利的出勤證據
+  if (!isAdmin()){ flash='🔒 打卡紀錄如有錯誤，請聯繫管理員協助刪除／補登，個人無法自行刪除。'; render(); return; }
   const mon = String(p.ts).slice(0,7);
   DB.punches.splice(i,1);
   savePunchMonth(mon);
   const who = emp(p.emp) || {no:'',name:'?'};
-  if (String(p.emp)!==String(state.uid)) pushAudit('刪除打卡', `${who.no} ${who.name}`, `${p.type} @ ${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}`);
+  pushAudit('刪除打卡', `${who.no} ${who.name}`, `${p.type} @ ${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}`);
   flash = `🗑️ 已刪除打卡：${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}`;
   render();
 }
@@ -2128,10 +2154,7 @@ function bind(){
     }
     el.onclick=ev=>{ try {
       if (act==='quick'){ doLogin(el.dataset.u, PW); }
-      if (act==='punch'){ const now=new Date();
-        DB.punches.push({ id:'p'+(++SEQ), emp:state.uid, type:el.dataset.type, ts:`${ymd(now)}T${pad(now.getHours())}:${pad(now.getMinutes())}` });
-        savePunchMonth(ymd(now).slice(0,7));
-        flash=`✅ ${el.textContent.trim()} 完成 · ${pad(now.getHours())}:${pad(now.getMinutes())}`; render(); }
+      if (act==='punch'){ recordPunch(el.dataset.type, el.textContent.trim()); }
       if (act==='delPunch'){ deletePunch(el.dataset.id, el.dataset.emp, el.dataset.type, el.dataset.ts); }
       if (act==='leaveScope'){
         const s = document.getElementById('leaveTypeSel');
