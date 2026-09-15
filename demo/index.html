@@ -438,18 +438,21 @@ const perDiemRate = role => PERDIEM[role] || 1000;
 /* 勞健保自付額自動試算 — 2026 投保級距（勞動部勞保局 / 健保署 115 年適用）。
    投保基準＝經常性薪資總額（本薪＋主管津貼＋其他津貼＋伙食津貼）；勞保投保薪資上限 45,800。
    2026 最低工資 29,500；健保投保金額最高 313,000。員工管理仍可手動微調。 */
-const LABOR_GRADES  = [29500,30300,31800,33300,34800,36300,38200,40100,42000,43900,45800];
+/* 勞保普通事故 11.5%＋就保 1%，員工負擔 20%＝投保薪資×2.5%。金額直接取自勞保局official分級表（非公式四捨五入 —
+   官方採「四捨六入五成雙」，個別級距與 JS 一般四捨五入會差 1 元，故改用官方公告金額逐級對照，確保分毫不差）。 */
+const LABOR_GRADES = [29500,30300,31800,33300,34800,36300,38200,40100,42000,43900,45800];
+const LABOR_SELF   = [738,758,795,832,870,908,955,1002,1050,1098,1145];
+/* 健保 5.17%，員工負擔 30%＝投保金額×1.551%（本人）；同樣直接取自健保署官方分級表金額。 */
 const HEALTH_GRADES = [29500,30300,31800,33300,34800,36300,38200,40100,42000,43900,45800,48200,50600,53000,55400,57800,60800,63800,66800,69800,72800,76500,80200,83900,87600,92100,96600,101100,105600,110100,115500,120900,126300,131700,137100,142500,147900,150000,156400,162800,169200,175600,182000,189500,197000,204500,212000,219500,228200,236900,245600,254300,263000,273000,283000,293000,303000,313000];
-const LABOR_RATE = 0.115, EI_RATE = 0.01, HEALTH_RATE = 0.0517;   // 2026：勞保普通事故 11.5%、就業保險 1%、健保 5.17%
-const gradeOf = (grades, sal) => { sal = +sal || 0; for (const g of grades) if (sal <= g) return g; return grades[grades.length-1]; };
+const HEALTH_SELF   = [458,470,493,516,540,563,592,622,651,681,710,748,785,822,859,896,943,990,1036,1083,1129,1187,1244,1301,1359,1428,1498,1568,1638,1708,1791,1875,1959,2043,2126,2210,2294,2326,2426,2525,2624,2724,2823,2939,3055,3172,3288,3404,3539,3674,3809,3944,4079,4234,4389,4544,4700,4855];
+const gradeIdx = (grades, sal) => { sal = +sal || 0; for (let i=0;i<grades.length;i++) if (sal <= grades[i]) return i; return grades.length-1; };
 function insuranceSelf(grossWage, dependents){
-  const lg = gradeOf(LABOR_GRADES, grossWage), hg = gradeOf(HEALTH_GRADES, grossWage);
+  const li = gradeIdx(LABOR_GRADES, grossWage), hi = gradeIdx(HEALTH_GRADES, grossWage);
   const deps = Math.max(0, Math.min(3, +dependents || 0));       // 健保眷屬第 4 口起免計
-  const healthPerPerson = Math.round(hg * HEALTH_RATE * 0.3);    // 本人自付（先四捨五入，再乘人數 → 與健保署分級表一致）
   return {
-    laborSelf:  Math.round(lg * (LABOR_RATE + EI_RATE) * 0.2),   // 投保薪資 × 12.5% × 20%
-    healthSelf: healthPerPerson * (1 + deps),                    // 本人自付 ×（本人＋眷口數）
-    laborGrade: lg, healthGrade: hg
+    laborSelf:  LABOR_SELF[li],                                  // 勞保局官方分級表本人（勞保＋就保）自付額
+    healthSelf: HEALTH_SELF[hi] * (1 + deps),                    // 健保署官方分級表本人自付額 ×（本人＋眷口數）
+    laborGrade: LABOR_GRADES[li], healthGrade: HEALTH_GRADES[hi]
   };
 }
 
@@ -459,9 +462,9 @@ function insuranceSelf(grossWage, dependents){
    一般同仁預設簽核流程 = 一階 → 二階；可於員工管理逐人覆寫 */
 const DEFAULT_FLOW = [1, 2];
 const SEED_EMP = [
-  { id:1, no:'GV001', name:'郭銘柔', username:'admin',   dept:1, title:'營運總監（一階主管）', role:'ADMIN',    hire:'2017-03-01', salary:95000,  meal:3000, mgrAllow:8000,  otherAllow:0, dependents:0, mgr:2,    flow:[2] },
-  { id:2, no:'GV002', name:'Johnson', username:'johnson', dept:1, title:'執行長（二階主管）',   role:'MANAGER',  hire:'2016-01-01', salary:120000, meal:3000, mgrAllow:12000, otherAllow:0, dependents:0, mgr:null, flow:[1] },
-  { id:3, no:'GV003', name:'測試員 test', username:'test', dept:2, title:'設計師（一般同仁）', role:'EMPLOYEE', hire:'2022-03-01', salary:48000, meal:3000, mgrAllow:0, otherAllow:0, dependents:0, mgr:1, flow:[1,2] },
+  { id:1, no:'GV001', name:'郭銘柔', username:'admin',   dept:1, title:'營運總監（一階主管）', role:'ADMIN',    hire:'2017-03-01', salary:150000, meal:3000, mgrAllow:8000,  otherAllow:0, dependents:0, mgr:2,    flow:[2] },
+  { id:2, no:'GV002', name:'Johnson', username:'johnson', dept:1, title:'執行長（二階主管）',   role:'MANAGER',  hire:'2016-01-01', salary:80000,  meal:3000, mgrAllow:12000, otherAllow:0, dependents:0, mgr:null, flow:[1] },
+  { id:3, no:'GV003', name:'測試員 test', username:'test', dept:2, title:'設計師（一般同仁）', role:'EMPLOYEE', hire:'2022-03-01', salary:30000,  meal:3000, mgrAllow:0, otherAllow:0, dependents:0, mgr:1, flow:[1,2] },
 ].map(e=>{ const ins = insuranceSelf(e.salary + (e.mgrAllow||0) + (e.otherAllow||0) + (e.meal||0), e.dependents);
   return { ...e, laborSelf:ins.laborSelf, healthSelf:ins.healthSelf }; });
 let EMP = [];                          // 由 hydrate() 從雲端資料庫或種子載入
@@ -524,7 +527,7 @@ function buildSeed(){
       { id:2, emp:3, type:'ANNUAL', start:d(Math.min(dimM,today+7)), end:d(Math.min(dimM,today+8)), days:2, hours:16, reason:'家庭旅遊', attach:'', status:'PENDING', steps:[{by:1,st:'PENDING'},{by:2,st:'PENDING'}] },
     ],
     overtime: [
-      { id:3, emp:3, date:otDay, start:'18:00', end:'20:30', hours:2.5, dayType:twDayType(otDay), comp:'PAY', reason:'客戶修改稿', wageBase:48000, status:'PENDING', estPay:overtimePay(48000,2.5,twDayType(otDay)), steps:[{by:1,st:'PENDING'},{by:2,st:'PENDING'}] },
+      { id:3, emp:3, date:otDay, start:'18:00', end:'20:30', hours:2.5, dayType:twDayType(otDay), comp:'PAY', reason:'客戶修改稿', wageBase:30000, status:'PENDING', estPay:overtimePay(30000,2.5,twDayType(otDay)), steps:[{by:1,st:'PENDING'},{by:2,st:'PENDING'}] },
     ],
     trips:   [ { id:4, emp:2, scope:'DOMESTIC', start:ymd(TODAY), end:d(Math.min(dimM,today+1)), dest:'台中', purpose:'客戶提案簡報', cost:4500, days:2, pdRate:1500, perDiem:3000, status:'APPROVED', steps:[{by:1,st:'APPROVED'}] } ],
     outings: [],
@@ -823,13 +826,14 @@ V.dashboard = () => {
     </div></div>
     <div class="panel"><h2>📅 我的本月考勤（${TODAY.getMonth()+1} 月）</h2>
       <div class="tiles" style="margin-bottom:14px">
+        <div class="tile"><div class="k">🚪 外出時數</div><div class="v">${att.outingHours} <span style="font-size:13px">小時</span></div></div>
         <div class="tile"><div class="k">⏰ 遲到</div><div class="v">${att.late} <span style="font-size:13px">分</span></div></div>
         <div class="tile"><div class="k">🏃 早退</div><div class="v">${att.early} <span style="font-size:13px">分</span></div></div>
         <div class="tile"><div class="k">❗ 缺卡</div><div class="v">${att.missing} <span style="font-size:13px">次</span></div></div>
         <div class="tile"><div class="k">⛔ 曠職</div><div class="v">${att.absent} <span style="font-size:13px">日</span></div></div>
       </div>
       <div>${anomChips}</div>
-      <div style="margin-top:12px"><a class="btn link" href="#/attendance">查看每日考勤明細 →</a></div>
+      <div style="margin-top:12px"><a class="btn link" href="#/attendance">查看每日考勤明細（含外出時段）→</a></div>
     </div>
     ${team}
   </div>`;
@@ -997,7 +1001,7 @@ V.attendance = () => {
       <td class="mono">${a.in}</td><td class="mono">${a.out}</td>
       <td class="num">${wk}</td>
       <td class="num">${a.late||''}</td><td class="num">${a.early||''}</td>
-      <td class="muted" style="font-size:12px">${a.outings?a.outings.join('、'):''}</td>
+      <td>${a.outings?a.outings.map(o=>`<span class="badge ${o.includes('未打返回卡')?'bad':'orange'}">🚪 ${o}</span>`).join(' '):'<span class="muted">—</span>'}</td>
       <td><span class="badge ${tone}">${lab}</span>${a.leaveNote?`<div class="subnote">${a.leaveNote}</div>`:''}</td>
       <td>${a.anomalies.map(anomBlock).join('') || '<span class="muted">—</span>'}</td>
     </tr>`;
@@ -1144,8 +1148,9 @@ V['leave/new'] = () => {
   if (rec && !editableReq(rec)) return `<div class="stack"><a class="btn link" href="#/leave">← 返回</a><div class="panel"><p class="muted">「${LT(rec.type).name}」已進入簽核流程，無法修改。請先在列表按「取消」，再重新申請。</p></div></div>`;
   const sel = rec ? rec.type : LEAVE_TYPES[0].code;
   const optOf = t => `<option value="${t.code}" ${t.code===sel?'selected':''}>${t.name}（${t.basis}）${canHourly(t.code)?' · 得按時':''}</option>`;
-  const opts = `<optgroup label="常用">${LEAVE_TYPES.filter(t=>COMMON_LEAVE.has(t.code)).map(optOf).join('')}</optgroup>`
-    + `<optgroup label="其他法定假別">${LEAVE_TYPES.filter(t=>!COMMON_LEAVE.has(t.code)).map(optOf).join('')}</optgroup>`;
+  const commonOpts = LEAVE_TYPES.filter(t=>COMMON_LEAVE.has(t.code)).map(optOf).join('');
+  const allOpts = LEAVE_TYPES.map(optOf).join('');
+  const showAllInit = !COMMON_LEAVE.has(sel);   // 編輯到「非常用」假別時，預設就展開全部清單，才看得到目前的選項
   const co = EMP.filter(x=>x.id!==e.id).map(x=>`<option value="${x.id}">${x.name}（${x.no}）</option>`).join('');
   const recPeriod = rec ? (rec.byHour ? 'HOURS' : (rec.half==='AM'||rec.half==='PM' ? rec.half : 'FULL')) : 'FULL';
   const pOpt = (v,l) => `<option value="${v}" ${recPeriod===v?'selected':''}>${l}</option>`;
@@ -1154,7 +1159,8 @@ V['leave/new'] = () => {
     <div class="panel"><h2>📝 ${rec?'修改請假申請':'請假申請'}</h2>
       <form data-form="leave" ${rec?`data-id="${rec.id}"`:''}>
         <div class="formgrid">
-          <div class="field" style="grid-column:1/-1"><label>假別</label><select name="type" data-act="leaveType" required>${opts}</select></div>
+          <div class="field" style="grid-column:1/-1"><label>假別　<button type="button" class="btn link" data-act="leaveScope" id="leaveScopeBtn" style="font-size:11px">${showAllInit?'︿ 只看常用假別':'︾ 顯示全部假別（婚喪／產假／育嬰留停等）'}</button></label>
+            <select name="type" id="leaveTypeSel" data-act="leaveType" data-scope="${showAllInit?'all':'common'}" required>${showAllInit?allOpts:commonOpts}</select></div>
           <div class="field"><label>開始日期</label><input type="date" name="start" value="${rec?rec.start:ymd(TODAY)}" required></div>
           <div class="field"><label>結束日期</label><input type="date" name="end" value="${rec?rec.end:ymd(TODAY)}" required></div>
           <div class="field"><label>時段（同日適用）</label><select name="period" data-act="leavePeriod">${pOpt('FULL','全天（8 小時）')}${pOpt('AM','上午半天（4 小時）')}${pOpt('PM','下午半天（4 小時）')}${pOpt('HOURS','指定時數（小時）')}</select></div>
@@ -1169,13 +1175,14 @@ V['leave/new'] = () => {
         <div id="formMsg"></div>
       </form>
     </div>
-    <div class="panel"><h2>📚 假別規定速查（勞基法及相關法規 ${LEAVE_TYPES.length} 種）</h2><div class="tablewrap"><table>
+    <details class="panel"><summary style="cursor:pointer;font-weight:700;font-size:15px">📚 假別規定速查（勞基法及相關法規 ${LEAVE_TYPES.length} 種，點開查看）</summary>
+      <div class="tablewrap" style="margin-top:12px"><table>
       <thead><tr><th>假別</th><th>法源</th><th>工資</th><th>年度額度</th><th>附件</th><th>應檢附文件</th></tr></thead>
       <tbody>${LEAVE_TYPES.map(t=>`<tr><td>${t.name}</td><td class="muted">${t.basis}</td><td>${paidLabel(t.paid)}</td>
         <td class="num">${t.quota!=null?t.quota+' 日':'依規則'}</td>
         <td><span class="badge ${t.attach==='REQUIRED'?'bad':t.attach==='FORBIDDEN'?'':'warn'}">${ATTACH_LABEL[t.attach]}</span></td>
         <td class="muted" style="font-size:11.5px">${t.doc}</td></tr>`).join('')}</tbody>
-    </table></div></div>
+    </table></div></details>
   </div>`;
 };
 function attHintHtml(code){
@@ -2001,6 +2008,19 @@ function bind(){
         savePunchMonth(ymd(now).slice(0,7));
         flash=`✅ ${el.textContent.trim()} 完成 · ${pad(now.getHours())}:${pad(now.getMinutes())}`; render(); }
       if (act==='delPunch'){ deletePunch(el.dataset.id, el.dataset.emp, el.dataset.type, el.dataset.ts); }
+      if (act==='leaveScope'){
+        const s = document.getElementById('leaveTypeSel');
+        if (s){
+          const showAll = s.dataset.scope !== 'all';
+          const cur = s.value;
+          const list = showAll ? LEAVE_TYPES : LEAVE_TYPES.filter(t=>COMMON_LEAVE.has(t.code));
+          s.innerHTML = list.map(t=>`<option value="${t.code}" ${t.code===cur?'selected':''}>${t.name}（${t.basis}）${canHourly(t.code)?' · 得按時':''}</option>`).join('');
+          s.dataset.scope = showAll ? 'all' : 'common';
+          el.textContent = showAll ? '︿ 只看常用假別' : '︾ 顯示全部假別（婚喪／產假／育嬰留停等）';
+          const b=document.getElementById('balHint'); if(b) b.innerHTML=balHintHtml(s.value);
+          const a=document.getElementById('attHint'); if(a) a.innerHTML=attHintHtml(s.value);
+        }
+      }
       if (act==='cancelReq'){ cancelReq(el.dataset.kind, el.dataset.id); }
       if (act==='csvSummary'){ downloadFile(`綠谷_月出勤彙總_${el.dataset.ym}.csv`, reportSummaryCSV(el.dataset.ym), 'text/csv'); }
       if (act==='csvDetail'){ downloadFile(`綠谷_逐日出勤明細_${el.dataset.ym}.csv`, reportDetailCSV(el.dataset.ym), 'text/csv'); }
