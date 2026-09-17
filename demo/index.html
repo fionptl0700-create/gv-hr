@@ -548,7 +548,13 @@ function resolveSteps(e, hrReview){
 }
 
 let SEQ = 100;
-const DB = { punches:[], leaves:[], overtime:[], trips:[], outings:[], wfh:[], att:[], payslips:[], audit:[] };
+const DB = { punches:[], leaves:[], overtime:[], trips:[], outings:[], wfh:[], punchFixes:[], att:[], payslips:[], audit:[] };
+const PUNCHFIX_MONTHLY_LIMIT = 2;
+/* 某人某月「補打卡」用掉的次數（PENDING＋APPROVED 都算，簽核中就先佔額度）；以「要補的那一天」屬於哪個月份計算 */
+function punchFixQuota(empId, ym){
+  const used = DB.punchFixes.filter(p=>String(p.emp)===String(empId) && ['PENDING','APPROVED'].includes(p.status) && p.date.startsWith(ym)).length;
+  return { used, left: Math.max(0, PUNCHFIX_MONTHLY_LIMIT - used) };
+}
 /* 打卡只在開機時預先載入「本月＋上月」到記憶體（見 loadPunchesCloud）；瀏覽更早的月份要另外向雲端補抓，
    loadedPunchMonths 記錄哪些月份已經在 DB.punches 裡，ensurePunchMonth 負責按需補抓並在抓到後重繪畫面。 */
 const loadedPunchMonths = new Set();     // 已抓完成的月份
@@ -662,11 +668,11 @@ function applyState(s){
   EMP.length = 0; (s.emp||[]).forEach(e=>EMP.push(e));
   SEQ = s.seq || 100;
   const d = s.db || {};
-  ['leaves','overtime','trips','outings','wfh','att','payslips','audit'].forEach(k=>{ DB[k].length=0; (d[k]||[]).forEach(x=>DB[k].push(x)); });
+  ['leaves','overtime','trips','outings','wfh','punchFixes','att','payslips','audit'].forEach(k=>{ DB[k].length=0; (d[k]||[]).forEach(x=>DB[k].push(x)); });
 }
 function collectState(){
   return { emp: EMP.map(x=>({...x})), seq: SEQ,
-    db: { leaves:DB.leaves, overtime:DB.overtime, trips:DB.trips, outings:DB.outings, wfh:DB.wfh, att:DB.att, payslips:DB.payslips, audit:DB.audit } };
+    db: { leaves:DB.leaves, overtime:DB.overtime, trips:DB.trips, outings:DB.outings, wfh:DB.wfh, punchFixes:DB.punchFixes, att:DB.att, payslips:DB.payslips, audit:DB.audit } };
 }
 function seedOffline(){ if(OFFLINE) return; OFFLINE = true; const s = buildSeed(); applyState(s); DB.punches.length=0; s.db.punches.forEach(p=>DB.punches.push(p)); }
 function withTimeout(p, ms, label){
@@ -752,7 +758,7 @@ async function downloadFile(filename, text, mime){
 }
 async function exportBackup(){
   const data = JSON.stringify({ exportedAt:new Date().toISOString(), employees:EMP, seq:SEQ,
-    punches:DB.punches, leaves:DB.leaves, overtime:DB.overtime, trips:DB.trips, outings:DB.outings, wfh:DB.wfh, att:DB.att, payslips:DB.payslips, audit:DB.audit }, null, 2);
+    punches:DB.punches, leaves:DB.leaves, overtime:DB.overtime, trips:DB.trips, outings:DB.outings, wfh:DB.wfh, punchFixes:DB.punchFixes, att:DB.att, payslips:DB.payslips, audit:DB.audit }, null, 2);
   await downloadFile(`綠谷人資備份_${ymd(TODAY)}.json`, data, 'application/json');
 }
 const csvCell = v => { v = v==null ? '' : String(v); return /[",\n]/.test(v) ? '"'+v.replace(/"/g,'""')+'"' : v; };
@@ -847,6 +853,7 @@ const NAV = [
   { r:'dashboard', label:'首頁',       ic:'🏠' },
   { r:'punch',     label:'打卡',       ic:'🕘' },
   { r:'attendance',label:'我的考勤',   ic:'📅' },
+  { r:'punchfix',  label:'補打卡',     ic:'🛠️' },
   { r:'leave',     label:'請假',       ic:'📝' },
   { r:'overtime',  label:'加班',       ic:'⏱️' },
   { r:'trip',      label:'出差／外出', ic:'🚗' },
@@ -883,7 +890,7 @@ function dashboardTips(e){
   }
   const att = monthAttendance(e.id, curMonth());
   if (att.missing>0){
-    tips.push({ icon:'❗', text:`這個月有 ${att.missing} 天忘記打下班卡，記得跟管理員說一聲幫忙補登喔。`, href:'#/attendance' });
+    tips.push({ icon:'❗', text:`這個月有 ${att.missing} 天忘記打下班卡，記得申請補打卡喔（每月上限 ${PUNCHFIX_MONTHLY_LIMIT} 次）。`, href:'#/punchfix/new' });
   }
   const pool = compTimePool(e.id);
   if (pool.expiring>0) tips.push({ icon:'🔁', text:`你有 ${pool.expiring} 小時補休將於 30 天內到期，記得安排時間用掉喔。`, href:'#/leave/new' });
@@ -1063,19 +1070,19 @@ V.punch = () => {
       <div class="formgrid" style="margin-top:12px">${main.map(mkBtn).join('')}</div>
       <div class="subnote" style="margin:16px 0 8px;font-weight:700;color:var(--ink-soft)">其他打卡（外出／加班起訖）</div>
       <div class="formgrid">${more.map(mkBtn).join('')}</div>
-      <p class="note">外出簽到／簽退會記錄在下方「今日打卡紀錄」，並在「我的考勤」逐日明細中列出外出時段、自動從當日工時扣除。打卡時若允許定位權限會一併記錄 GPS 座標（有 📍 圖示可點開查看地點）。</p>
+      <p class="note">外出簽到／簽退會記錄在下方「今日打卡紀錄」，並在「我的考勤」逐日明細中列出外出時段、自動從當日工時扣除。打卡時若允許定位權限會一併記錄 GPS 座標（有 📍 圖示可點開查看地點）。忘記打卡請至<a class="btn link" href="#/punchfix/new">🕘 申請補打卡</a>（每月上限 ${PUNCHFIX_MONTHLY_LIMIT} 次，需主管簽核）。</p>
     </div>
     <div class="grid2">
       <div class="panel"><h2>📋 今日打卡紀錄</h2><div class="tablewrap"><table>
-        <thead><tr><th>時間</th><th>類型</th><th>地點</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
-        ${today.length?today.map(p=>`<tr><td class="mono">${fmtT(p.ts)}</td><td>${T[p.type]}</td><td>${gpsLink(p)}</td>${isAdmin()?`<td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️ 刪除</button></td>`:''}</tr>`).join(''):`<tr><td colspan="${isAdmin()?4:3}" class="muted" style="text-align:center;padding:22px">今日尚無打卡</td></tr>`}
+        <thead><tr><th>時間</th><th>類型</th><th>地點</th></tr></thead><tbody>
+        ${today.length?today.map(p=>`<tr><td class="mono">${fmtT(p.ts)}</td><td>${T[p.type]}</td><td>${gpsLink(p)}</td></tr>`).join(''):`<tr><td colspan="3" class="muted" style="text-align:center;padding:22px">今日尚無打卡</td></tr>`}
         </tbody></table></div></div>
       <div class="panel"><h2>🗓️ ${yr} 年 ${mo} 月打卡紀錄</h2>${punchMonthNav}<div class="tablewrap" style="margin-top:10px"><table>
-        <thead><tr><th>日期時間</th><th>類型</th><th>地點</th>${isAdmin()?'<th></th>':''}</tr></thead><tbody>
-        ${!monthReady?`<tr><td colspan="${isAdmin()?4:3}" class="muted" style="text-align:center;padding:22px">⏳ 載入中…</td></tr>`:recent.map(p=>`<tr><td class="mono">${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}</td><td>${T[p.type]}</td><td>${gpsLink(p)}</td>${isAdmin()?`<td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️</button></td>`:''}</tr>`).join('')||`<tr><td colspan="${isAdmin()?4:3}" class="muted" style="text-align:center;padding:22px">本月尚無打卡</td></tr>`}
+        <thead><tr><th>日期時間</th><th>類型</th><th>地點</th></tr></thead><tbody>
+        ${!monthReady?`<tr><td colspan="3" class="muted" style="text-align:center;padding:22px">⏳ 載入中…</td></tr>`:recent.map(p=>`<tr><td class="mono">${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}</td><td>${T[p.type]}</td><td>${gpsLink(p)}</td></tr>`).join('')||`<tr><td colspan="3" class="muted" style="text-align:center;padding:22px">本月尚無打卡</td></tr>`}
         </tbody></table></div></div>
     </div>
-    <p class="note">${isAdmin()?'誤打卡可按「🗑️ 刪除」移除該筆；':''}打卡紀錄僅管理員可刪除／調整，本人如發現錯誤請告知管理員協助處理。</p>
+    <p class="note">打卡紀錄一律不可刪除／竄改，確保出勤紀錄真實完整；打錯或忘記打卡請透過「🕘 申請補打卡」走簽核流程更正。</p>
   </div>`;
 };
 
@@ -1260,12 +1267,12 @@ function adminPunchPanel(e, ym){
     .sort((a,b)=>String(b.ts).localeCompare(String(a.ts)));
   const rows = list.map(p=>`<tr>
     <td class="mono">${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}</td>
-    <td>${PT[p.type]||p.type}${p.editedBy?`<span class="subnote"> · 已由管理員調整</span>`:''}</td>
+    <td>${PT[p.type]||p.type}${p.editedBy?`<span class="subnote"> · 已由管理員新增</span>`:p.fixId?`<span class="subnote"> · 補打卡申請核准</span>`:''}</td>
     <td>${gpsLink(p)}</td>
-    <td><button class="btn link" data-act="delPunch" data-id="${p.id||''}" data-emp="${p.emp}" data-type="${p.type}" data-ts="${p.ts}">🗑️ 刪除</button></td>
   </tr>`).join('');
   return `<div class="panel" style="border-color:var(--warn)">
-    <h2 style="color:var(--warn)">🛠️ 打卡調整（管理員代 ${e.name} 修正 · ${ym}）</h2>
+    <h2 style="color:var(--warn)">🛠️ 打卡調整（管理員代 ${e.name} 新增 · ${ym}）</h2>
+    <p class="note">正常情況請 ${e.name} 自行至「補打卡」申請（需主管簽核、每月上限 ${PUNCHFIX_MONTHLY_LIMIT} 次）；這裡僅供緊急狀況（例如新人尚未有帳號、系統異常）由管理員直接新增，不受次數限制。打卡紀錄一律不可刪除，新增有誤請改用「補打卡」流程另外處理／說明。</p>
     ${future ? `<p class="note">⚠️ ${ym} 尚未到，無法補打卡。</p>` : `
     <form data-form="adminPunch" data-emp="${e.id}" class="row" style="align-items:flex-end">
       <div class="field"><label>日期</label><input type="date" name="date" value="${mMax}" min="${mb.start}" max="${mMax}" required></div>
@@ -1276,10 +1283,10 @@ function adminPunchPanel(e, ym){
     </form>
     <p class="note" style="margin-top:6px">只能補「${ym} 這個月」的打卡；要補其他月份，請先在上方切換到那個月。填「結束日期」可一次補登一段期間，只會補「平日」（自動跳過週六日／國定假日），已有同類型打卡的那天會自動略過、不會重複新增。</p>`}
     <div class="tablewrap" style="margin-top:12px"><table>
-      <thead><tr><th>日期時間</th><th>類型</th><th>地點</th><th></th></tr></thead>
-      <tbody>${rows || `<tr><td colspan="4" class="muted" style="text-align:center;padding:16px">${ym} 尚無打卡</td></tr>`}</tbody>
+      <thead><tr><th>日期時間</th><th>類型</th><th>地點</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="3" class="muted" style="text-align:center;padding:16px">${ym} 尚無打卡</td></tr>`}</tbody>
     </table></div>
-    <p class="note">新增／刪除打卡都會寫入「稽核軌跡」。要修改某筆時間，請先刪除再新增。</p>
+    <p class="note">新增打卡會寫入「稽核軌跡」。</p>
   </div>`;
 }
 function adminAddPunch(empId, date, endDate, type, hm){
@@ -1509,6 +1516,56 @@ V['overtime/new'] = () => {
   </div>
 </div>`;
 };
+V.punchfix = () => {
+  const e = me();
+  const list = DB.punchFixes.filter(p=>String(p.emp)===String(e.id)).slice().reverse();
+  const tone={APPROVED:'good',PENDING:'warn',REJECTED:'bad',CANCELLED:''};
+  const tw={APPROVED:'✅ 已核准',PENDING:'⏳ 簽核中',REJECTED:'✖ 已駁回',CANCELLED:'已取消'};
+  const qc = punchFixQuota(e.id, curMonth());
+  return `<div class="stack">
+    <div class="row" style="justify-content:space-between;flex-wrap:wrap;gap:10px">
+      <div class="muted">忘記打卡可在這裡申請補登，需主管簽核並寫明原因；本月（${curMonth()}）已用 ${qc.used}/${PUNCHFIX_MONTHLY_LIMIT} 次，還剩 ${qc.left} 次。</div>
+      <a class="btn primary" href="#/punchfix/new">🕘 申請補打卡</a>
+    </div>
+    <div class="panel"><div class="tablewrap"><table>
+      <thead><tr><th>日期</th><th>類型</th><th>時間</th><th>原因</th><th>簽核進度</th><th>狀態</th><th></th></tr></thead>
+      <tbody>${list.length?list.map(p=>{
+        const done=p.steps.filter(s=>s.st==='APPROVED').length;
+        const prog=p.steps.map(s=>`${(emp(s.by)||{name:'?'}).name}${s.st==='APPROVED'?'✓':s.st==='REJECTED'?'✗':s.st==='CANCELLED'?'⊘':'…'}`).join(' → ');
+        return `<tr><td class="mono">${fmtD(p.date)}</td><td>${PUNCHFIX_TYPES[p.type]||p.type}</td><td class="mono">${p.time}</td><td class="muted">${esc(p.reason||'')}</td>
+          <td class="chain">${p.steps.length?`${done}/${p.steps.length}｜${prog}`:'—'}</td>
+          <td><span class="badge ${tone[p.status]}">${tw[p.status]}</span></td>
+          <td style="white-space:nowrap">${editableReq(p)?`<a class="btn link" href="#/punchfix/new?id=${p.id}">編輯</a>　<button class="btn link" data-act="cancelReq" data-kind="punchfix" data-id="${p.id}">取消</button>`:''}</td></tr>`;
+      }).join(''):'<tr><td colspan="7" class="muted" style="text-align:center;padding:22px">尚無補打卡申請</td></tr>'}</tbody>
+    </table></div></div>
+  </div>`;
+};
+V['punchfix/new'] = () => {
+  const e = me();
+  const q = new URLSearchParams(state.route.split('?')[1]||'');
+  const editId = q.get('id') || null;
+  const rec = editId ? findMyReq('punchfix', editId) : null;
+  if (editId && !rec) return `<div class="stack"><a class="btn link" href="#/punchfix">← 返回</a><div class="panel"><p class="muted">找不到這筆補打卡申請，或不是你本人的申請。</p></div></div>`;
+  if (rec && !editableReq(rec)) return `<div class="stack"><a class="btn link" href="#/punchfix">← 返回</a><div class="panel"><p class="muted">此補打卡申請已進入簽核流程，無法修改。</p></div></div>`;
+  const initDate = rec ? rec.date : ymd(TODAY);
+  return `<div class="stack">
+  <a class="btn link" href="#/punchfix">← 返回補打卡列表</a>
+  <div class="panel"><h2>🕘 ${rec?'修改補打卡申請':'補打卡申請'}</h2>
+    <div class="banner"><span>ℹ️</span><div>每人每月最多可申請 ${PUNCHFIX_MONTHLY_LIMIT} 次補打卡，需經主管簽核通過後，系統才會實際補上該筆打卡紀錄。</div></div>
+    <form data-form="punchfix" ${rec?`data-id="${rec.id}"`:''}>
+      <div class="formgrid" style="margin-top:12px">
+        <div class="field"><label>要補的日期</label><input type="date" name="date" data-act="pfDate" value="${initDate}" max="${ymd(TODAY)}" required></div>
+        <div class="field"><label>打卡類型</label><select name="type">${Object.entries(PUNCHFIX_TYPES).map(([k,v])=>`<option value="${k}" ${rec&&rec.type===k?'selected':''}>${v}</option>`).join('')}</select></div>
+        <div class="field"><label>時間</label><input type="time" name="time" value="${rec?rec.time:'09:00'}" required></div>
+        <div class="field" style="grid-column:1/-1"><label>補打卡原因</label><input name="reason" value="${rec?esc(rec.reason||''):''}" placeholder="請簡述忘記打卡的原因，供主管簽核參考" required></div>
+      </div>
+      <div id="pfHint" style="margin-top:12px">${pfHintHtml(initDate, editId)}</div>
+      <div class="row" style="margin-top:16px"><button class="btn primary" type="submit">✓ ${rec?'更新申請':'送出申請'}</button>${rec?' <a class="btn" href="#/punchfix">放棄修改</a>':''}</div>
+      <div id="formMsg"></div>
+    </form>
+  </div>
+</div>`;
+};
 
 V.trip = () => {
   const e = me();
@@ -1606,6 +1663,7 @@ function myRequestsAll(uid){
     ...mine(DB.trips).map(x=>({ kind:'✈️ 出差', desc:`${fmtD(x.start).slice(5)}${x.start!==x.end?'–'+fmtD(x.end).slice(5):''}　${esc(x.dest||'')}`, x })),
     ...mine(DB.outings).map(x=>({ kind:'🚪 外出', desc:`${fmtD(x.date).slice(5)}　${x.start}–${x.end}`, x })),
     ...mine(DB.wfh).map(x=>({ kind:'🏠 遠距', desc:fmtD(x.date).slice(5), x })),
+    ...mine(DB.punchFixes).map(x=>({ kind:'🕘 補打卡', desc:`${fmtD(x.date).slice(5)}　${PUNCHFIX_TYPES[x.type]||x.type}　${x.time}`, x })),
   ];
   return out.sort((a,b)=>(+b.x.id||0)-(+a.x.id||0));
 }
@@ -1633,7 +1691,7 @@ function pendingApprovalsFor(uid){
     const idx=x.steps.findIndex(s=>s.st==='PENDING');
     if(idx>=0 && String(x.steps[idx].by)===String(uid)) out.push({kind,x,step:idx});
   });
-  scan(DB.leaves,'LEAVE'); scan(DB.overtime,'OVERTIME'); scan(DB.trips,'TRIP'); scan(DB.outings,'OUTING'); scan(DB.wfh,'WFH');
+  scan(DB.leaves,'LEAVE'); scan(DB.overtime,'OVERTIME'); scan(DB.trips,'TRIP'); scan(DB.outings,'OUTING'); scan(DB.wfh,'WFH'); scan(DB.punchFixes,'PUNCHFIX');
   return out;
 }
 V.approvals = () => {
@@ -1657,6 +1715,7 @@ V.approvals = () => {
       x.cost!=null?`預估差旅費 ${money(x.cost)}`:'',
       x.perDiem?`出差津貼 ${x.days} 日 × ${money(x.pdRate)} = ${money(x.perDiem)}`:'']};
     if(kind==='OUTING') return {who:emp(x.emp).name,title:'🚪 外出單',lines:[`${fmtD(x.date)} ${x.start}–${x.end} · ${x.location}`,`事由：${x.purpose}`]};
+    if(kind==='PUNCHFIX') return {who:emp(x.emp).name,title:'🕘 補打卡申請',lines:[`${fmtD(x.date)}　${PUNCHFIX_TYPES[x.type]||x.type}　${x.time}`,`原因：${x.reason}`]};
     return {who:emp(x.emp).name,title:'🏠 遠距工作單',lines:[`${fmtD(x.date)} · ${x.location||'—'}`,`工作項目：${x.plan}`]};
   };
   const cards = pend.length ? pend.map(p=>{
@@ -1747,11 +1806,11 @@ V.staff = () => {
     <td class="num">${money(x.salary)}</td><td class="num">${money(x.meal)}</td>
     <td class="num">${x.mgrAllow?money(x.mgrAllow):'—'}</td><td class="num">${x.otherAllow?money(x.otherAllow):'—'}</td>
     <td class="chain">${(x.flow&&x.flow.length)?x.flow.map(id=>emp(id)?.name||'—').join(' → '):'（預設：直屬主管）'}</td>
-    <td><a class="btn link" href="#/staff?id=${x.id}">編輯</a> · <a class="btn link" href="#/attendance?e=${x.id}" title="幫此員工補打卡／查看考勤">補打卡</a></td>
+    <td><a class="btn link" href="#/staff?id=${x.id}">編輯</a> · <a class="btn link" href="#/attendance?e=${x.id}" title="查看該員工考勤／緊急狀況直接新增打卡">查看考勤</a></td>
   </tr>`).join('');
   return `<div class="stack">
     <div class="row" style="justify-content:space-between">
-      <div class="muted">新增／編輯員工、開立登入帳號與員工編號、設定每位員工的假單簽核流程。忘記打卡要幫員工補登，請點該員工列的「補打卡」。</div>
+      <div class="muted">新增／編輯員工、開立登入帳號與員工編號、設定每位員工的假單簽核流程。員工忘記打卡請他本人送「補打卡」申請走簽核；點該員工列的「查看考勤」只用於緊急狀況直接新增。</div>
       <a class="btn primary" href="#/staff">＋ 新增員工</a>
     </div>
     <div class="panel"><h2>${e?`✏️ 編輯 — ${e.name}`:'➕ 新增員工'}</h2>
@@ -2186,7 +2245,7 @@ const errMsg = m => {
 };
 
 /* ---- 自行送出之申請：查詢 / 可否修改 / 取消 ---- */
-const REQ_ARR = { leave:'leaves', overtime:'overtime', trip:'trips', outing:'outings', wfh:'wfh' };
+const REQ_ARR = { leave:'leaves', overtime:'overtime', trip:'trips', outing:'outings', wfh:'wfh', punchfix:'punchFixes' };
 function findMyReq(kind, id){
   return (DB[REQ_ARR[kind]]||[]).find(r=>String(r.id)===String(id) && String(r.emp)===String(state.uid));
 }
@@ -2206,7 +2265,7 @@ function cancelReq(kind, id){
   const was = rec.status;
   rec.status = 'CANCELLED';
   (rec.steps||[]).forEach(s=>{ if(s.st==='PENDING') s.st='CANCELLED'; });
-  const K={leave:'請假',overtime:'加班',trip:'出差',outing:'外出',wfh:'遠距'}[kind]||kind;
+  const K={leave:'請假',overtime:'加班',trip:'出差',outing:'外出',wfh:'遠距',punchfix:'補打卡'}[kind]||kind;
   pushAudit('取消申請', `${(me()||{name:'?'}).name} 的${K}單`, `原狀態 ${was}`);
   saveAll(); flash='已取消申請'; render();
 }
@@ -2240,23 +2299,6 @@ function recordPunch(type, label){
       );
     } else finish(null,null,null,'此瀏覽器不支援定位');
   } catch(e){ finish(null,null,null,'定位功能被阻擋'); }
-}
-/* 刪除單筆打卡（僅管理員可刪，含員工本人的紀錄） */
-function deletePunch(id, emp2, type, ts){
-  const i = DB.punches.findIndex(p =>
-    (id && String(p.id)===String(id)) ||
-    (!id && String(p.emp)===String(emp2) && p.type===type && p.ts===ts));
-  if (i < 0){ flash='⚠️ 找不到該筆打卡（可能已刪除）'; render(); return; }
-  const p = DB.punches[i];
-  // 打卡紀錄僅管理員可刪除（含員工本人的紀錄）：避免任何人自行刪掉對自己不利的出勤證據
-  if (!isAdmin()){ flash='🔒 打卡紀錄如有錯誤，請聯繫管理員協助刪除／補登，個人無法自行刪除。'; render(); return; }
-  const mon = String(p.ts).slice(0,7);
-  DB.punches.splice(i,1);
-  savePunchMonth(mon);
-  const who = emp(p.emp) || {no:'',name:'?'};
-  pushAudit('刪除打卡', `${who.no} ${who.name}`, `${p.type} @ ${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}`);
-  flash = `🗑️ 已刪除打卡：${fmtD(p.ts).slice(5)} ${fmtT(p.ts)}`;
-  render();
 }
 
 /* 依「開始時間～結束時間」（同日）換算實際請假時數：夾在 09:00–18:00 之間，且中午 12:00–13:00 休息不計工時，
@@ -2374,6 +2416,37 @@ function submitOvertime(fd, form){
   flash = lim.level==='OK' ? '⏱️ 加班申請已送出' : `⏱️ 加班申請已送出（當月已達 §32 上限 ${lim.level==='WARN'?'80%':'100%'}，自動加簽人資）`;
   location.hash='#/overtime';
 }
+/* ---- 補打卡申請：每人每月上限 2 次，需主管簽核（寫明原因），核准後才會實際補上該筆打卡紀錄 ---- */
+const PUNCHFIX_TYPES = { IN:'上班簽到', OUT:'下班簽退', OUTING_OUT:'外出', OUTING_IN:'外出返回', OT_IN:'加班開始', OT_OUT:'加班結束' };
+function pfHintHtml(dateStr, excludeId){
+  const ym = String(dateStr||'').slice(0,7);
+  if (!ym) return '';
+  const used = DB.punchFixes.filter(p=>String(p.emp)===String(me().id) && String(p.id)!==String(excludeId||'') && ['PENDING','APPROVED'].includes(p.status) && p.date.startsWith(ym)).length;
+  const left = Math.max(0, PUNCHFIX_MONTHLY_LIMIT - used);
+  return `<div class="banner" style="${left<=0?'background:var(--bad-bg);color:var(--bad)':''}">📆 ${ym} 這個月已用 ${used}/${PUNCHFIX_MONTHLY_LIMIT} 次補打卡${left<=0?'，本月額度已用完':`，還剩 ${left} 次`}</div>`;
+}
+function submitPunchFix(fd, form){
+  const e = me();
+  const editId = (form && form.dataset.id) || null;
+  if (!fd.date) return errMsg('請選擇要補打卡的日期');
+  if (fd.date > ymd(TODAY)) return errMsg('不能補未來的日期');
+  if (!fd.type || !PUNCHFIX_TYPES[fd.type]) return errMsg('請選擇打卡類型');
+  if (!fd.time) return errMsg('請填時間');
+  if (!fd.reason || !fd.reason.trim()) return errMsg('請填寫補打卡原因，供主管簽核參考');
+  const ym = fd.date.slice(0,7);
+  const others = DB.punchFixes.filter(p=>String(p.emp)===String(e.id) && String(p.id)!==String(editId||'') && ['PENDING','APPROVED'].includes(p.status) && p.date.startsWith(ym));
+  if (others.length >= PUNCHFIX_MONTHLY_LIMIT) return errMsg(`「${ym}」這個月的補打卡次數已用完（每月上限 ${PUNCHFIX_MONTHLY_LIMIT} 次）`);
+  if (editId){
+    const rec = findMyReq('punchfix', editId);
+    if (!editableReq(rec)) return errMsg('此補打卡申請已進入簽核流程，無法修改');
+    Object.assign(rec, { date:fd.date, type:fd.type, time:fd.time, reason:fd.reason, steps:resolveSteps(e,false) });
+    saveAll(); flash='✏️ 已更新補打卡申請'; location.hash='#/punchfix'; return;
+  }
+  DB.punchFixes.push({ id:++SEQ, emp:e.id, date:fd.date, type:fd.type, time:fd.time, reason:fd.reason, status:'PENDING', steps:resolveSteps(e,false) });
+  saveAll();
+  flash = '🕘 補打卡申請已送出，已送交簽核';
+  location.hash='#/punchfix';
+}
 function submitTrip(fd, form){
   const e=me();
   const editId = (form && form.dataset.id) || null;
@@ -2447,7 +2520,7 @@ function saveStaff(fd, id){
   if (state.route==='staff' && location.hash==='#/staff') render();
 }
 function decide(kind,id,action){
-  const map={LEAVE:DB.leaves,OVERTIME:DB.overtime,TRIP:DB.trips,OUTING:DB.outings,WFH:DB.wfh};
+  const map={LEAVE:DB.leaves,OVERTIME:DB.overtime,TRIP:DB.trips,OUTING:DB.outings,WFH:DB.wfh,PUNCHFIX:DB.punchFixes};
   const x=map[kind].find(r=>String(r.id)===String(id));
   if(!x){ errMsg('找不到單據'); return; }
   const idx=x.steps.findIndex(s=>s.st==='PENDING');
@@ -2456,7 +2529,12 @@ function decide(kind,id,action){
   x.steps[idx].st=action; x.steps[idx].cmt=cmt;
   if (action==='REJECTED') x.status='REJECTED';
   else if (idx===x.steps.length-1) x.status='APPROVED';
-  const K={LEAVE:'請假',OVERTIME:'加班',TRIP:'出差',OUTING:'外出',WFH:'遠距'}[kind]||kind;
+  // 補打卡申請通過所有關卡後，直接把打卡紀錄補上（避免核准了卻還要管理員再手動補一次）
+  if (kind==='PUNCHFIX' && x.status==='APPROVED'){
+    const dup = DB.punches.some(p=>String(p.emp)===String(x.emp) && p.type===x.type && String(p.ts).slice(0,10)===x.date);
+    if (!dup){ DB.punches.push({ id:'p'+(++SEQ), emp:x.emp, type:x.type, ts:`${x.date}T${x.time}`, fixId:x.id }); savePunchMonth(x.date.slice(0,7)); }
+  }
+  const K={LEAVE:'請假',OVERTIME:'加班',TRIP:'出差',OUTING:'外出',WFH:'遠距',PUNCHFIX:'補打卡'}[kind]||kind;
   pushAudit(action==='APPROVED'?'簽核核准':'簽核駁回', `${(emp(x.emp)||{name:'?'}).name} 的${K}單`,
     `第 ${idx+1} 關${cmt?`：${cmt}`:''}${x.status==='APPROVED'?'（全部關卡通過）':x.status==='REJECTED'?'（駁回）':'（待下一關）'}`);
   saveAll();
@@ -2478,7 +2556,7 @@ function buildNav(){
 function bind(){
   const base=state.route.split('?')[0].split('/')[0]||'dashboard';
   document.querySelectorAll('.navlink').forEach(a=>a.classList.toggle('on', a.dataset.r===base));
-  const all=[...NAV,...NAV_ADMIN,{r:'leave/new',label:'請假'},{r:'overtime/new',label:'加班'},{r:'trip/new',label:'出差／外出'},{r:'payslip',label:'薪酬明細'},{r:'my-payslips',label:'我的薪酬'},{r:'my-requests',label:'我的申請總覽'},{r:'idcard',label:'人事卡'},{r:'login',label:'登入'}];
+  const all=[...NAV,...NAV_ADMIN,{r:'leave/new',label:'請假'},{r:'overtime/new',label:'加班'},{r:'trip/new',label:'出差／外出'},{r:'punchfix/new',label:'補打卡'},{r:'payslip',label:'薪酬明細'},{r:'my-payslips',label:'我的薪酬'},{r:'my-requests',label:'我的申請總覽'},{r:'idcard',label:'人事卡'},{r:'login',label:'登入'}];
   document.getElementById('pageTitle').textContent=(all.find(n=>n.r===state.route.split('?')[0])||all.find(n=>n.r===base)||{label:'首頁'}).label;
 
   document.querySelectorAll('#view [data-act]').forEach(el=>{
@@ -2511,10 +2589,13 @@ function bind(){
         h.innerHTML=`<div class="banner"><span>📅</span><div>系統判定為 <b>${DT_LABEL[dt]}</b>${dt==='OFF_DAY'?'（例假日除天災事變外不得出勤）':dt==='HOLIDAY'?'（8 小時內加發一日工資）':''}，將依 §24 對應加成試算。</div></div>`; } };
       el.onchange=upd; el.oninput=upd; upd(); return;
     }
+    if (act==='pfDate'){
+      const upd=()=>{ const h=document.getElementById('pfHint'); if(h) h.innerHTML=pfHintHtml(el.value, el.form.dataset.id); };
+      el.onchange=upd; el.oninput=upd; return;
+    }
     el.onclick=ev=>{ try {
       if (act==='quick'){ doLogin(el.dataset.u, PW); }
       if (act==='punch'){ recordPunch(el.dataset.type, el.textContent.trim()); }
-      if (act==='delPunch'){ deletePunch(el.dataset.id, el.dataset.emp, el.dataset.type, el.dataset.ts); }
       if (act==='leaveScope'){
         const s = document.getElementById('leaveTypeSel');
         if (s){
@@ -2565,6 +2646,7 @@ function bind(){
           } else submitLeave(fd, form, null);
         }
         else if (k==='overtime') submitOvertime(fd, form);
+        else if (k==='punchfix') submitPunchFix(fd, form);
         else if (k==='trip') submitTrip(fd, form);
         else if (k==='staff') saveStaff(fd, (form.dataset.id!=null && form.dataset.id!=='') ? form.dataset.id : null);
         else if (k==='payroll') location.hash=`#/payroll?e=${fd.e}&y=${fd.y}&m=${fd.m}`;
