@@ -1502,9 +1502,9 @@ V['overtime/new'] = () => {
   <div class="panel"><h2>⏱️ ${rec?'修改加班申請':'加班申請'}</h2>
     <form data-form="overtime" ${rec?`data-id="${rec.id}"`:''}>
       <div class="formgrid">
-        <div class="field"><label>加班日期</label><input type="date" name="date" data-act="otDate" value="${rec?rec.date:ymd(TODAY)}" required></div>
+        <div class="field"><label>加班日期</label><input type="date" name="date" data-act="otDate" value="${rec?rec.date:ymd(TODAY)}" max="${ymd(TODAY)}" required></div>
         <div class="field"><label>開始時間</label><input type="time" name="start" value="${rec?rec.start:'18:00'}" required></div>
-        <div class="field"><label>結束時間</label><input type="time" name="end" value="${rec?rec.end:'20:00'}" required></div>
+        <div class="field"><label>結束時間</label><input type="time" name="end" id="otEnd" value="${rec?rec.end:'20:00'}" required></div>
         <div class="field"><label>補償方式</label><select name="comp"><option value="PAY" ${rec&&rec.comp==='PAY'?'selected':''}>加班費</option><option value="COMP_TIME" ${rec&&rec.comp==='COMP_TIME'?'selected':''}>補休（1:1，6 個月內休畢）</option></select></div>
         <div class="field" style="grid-column:1/-1"><label>加班事由</label><input name="reason" value="${rec?esc(rec.reason||''):''}" required></div>
       </div>
@@ -2392,6 +2392,14 @@ function goHash(h){
 function submitOvertime(fd, form){
   const e=me();
   const editId = (form && form.dataset.id) || null;
+  // 加班是「已經發生」的事實才能申報，不像請假可以預先申請未來時段：
+  // 日期不能晚於今天；如果就是今天，結束時間也不能晚於現在（代表那段加班根本還沒發生）。
+  if (fd.date > ymd(TODAY)) return errMsg('不能申請尚未發生的加班，加班日期不能晚於今天');
+  if (fd.date === ymd(TODAY)){
+    const nowMin = TODAY.getHours()*60 + TODAY.getMinutes();
+    const [eh0,em0] = fd.end.split(':').map(Number);
+    if (eh0*60+em0 > nowMin) return errMsg('加班時段還沒結束，請等實際下班後再送出申請（結束時間不能晚於目前時間）');
+  }
   const [sh,sm]=fd.start.split(':').map(Number), [eh,em]=fd.end.split(':').map(Number);
   const hours=Math.round((((eh*60+em)-(sh*60+sm))/60)*100)/100;
   if (hours<=0) return errMsg('結束時間需晚於開始時間');
@@ -2432,6 +2440,11 @@ function submitPunchFix(fd, form){
   if (fd.date > ymd(TODAY)) return errMsg('不能補未來的日期');
   if (!fd.type || !PUNCHFIX_TYPES[fd.type]) return errMsg('請選擇打卡類型');
   if (!fd.time) return errMsg('請填時間');
+  if (fd.date===ymd(TODAY)){
+    const nowMin = TODAY.getHours()*60 + TODAY.getMinutes();
+    const [th,tm] = fd.time.split(':').map(Number);
+    if (th*60+tm > nowMin) return errMsg('不能補還沒發生的時間，請填目前時間之前的時刻');
+  }
   if (!fd.reason || !fd.reason.trim()) return errMsg('請填寫補打卡原因，供主管簽核參考');
   const ym = fd.date.slice(0,7);
   const others = DB.punchFixes.filter(p=>String(p.emp)===String(e.id) && String(p.id)!==String(editId||'') && ['PENDING','APPROVED'].includes(p.status) && p.date.startsWith(ym));
@@ -2586,7 +2599,9 @@ function bind(){
     }
     if (act==='otDate'){
       const upd=()=>{ const h=document.getElementById('otHint'); if(h){ const dt=twDayType(el.value);
-        h.innerHTML=`<div class="banner"><span>📅</span><div>系統判定為 <b>${DT_LABEL[dt]}</b>${dt==='OFF_DAY'?'（例假日除天災事變外不得出勤）':dt==='HOLIDAY'?'（8 小時內加發一日工資）':''}，將依 §24 對應加成試算。</div></div>`; } };
+        h.innerHTML=`<div class="banner"><span>📅</span><div>系統判定為 <b>${DT_LABEL[dt]}</b>${dt==='OFF_DAY'?'（例假日除天災事變外不得出勤）':dt==='HOLIDAY'?'（8 小時內加發一日工資）':''}，將依 §24 對應加成試算。</div></div>`; }
+        const endEl=document.getElementById('otEnd');
+        if (endEl){ endEl.max = (el.value===ymd(TODAY)) ? `${pad(TODAY.getHours())}:${pad(TODAY.getMinutes())}` : ''; } };
       el.onchange=upd; el.oninput=upd; upd(); return;
     }
     if (act==='pfDate'){
